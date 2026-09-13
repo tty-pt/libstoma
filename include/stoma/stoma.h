@@ -32,7 +32,7 @@ typedef struct stoma_db stoma_db_t;
 stoma_db_t *stoma_open(unsigned mask);
 
 /*
- * rec_axis_open (PLAN-REC-QUERY.md §4.3, optional CLI-open convention,
+ * rec_axis_open (RECALL-KERNEL.md "rec_axis_open convention", optional CLI-open convention,
  * not part of libqmap's core rec_query registry API): opens a stoma
  * index from an opaque spec string (the decimal stoma_open() mask;
  * empty/NULL -> 0, the qmap default) and returns the ctx a caller then
@@ -53,6 +53,20 @@ void stoma_clear(stoma_db_t *db);
  */
 int stoma_index(stoma_db_t *db,
 	const char *field, const char *row_id, const char *value);
+
+/*
+ * rec_ref_t-native convenience wrapper for callers whose ids are already
+ * a rec_ref_t (the id-uniformity boundary shared with libjoint/libsepal/
+ * libislet's rec_axis_fill_* functions): formats row_id as the canonical
+ * decimal string stoma_rank/rec_axis_fill_tokens expect and calls
+ * stoma_index. This does not change stoma's storage or key format, and
+ * does not remove the generic string-row_id path (stoma_index proper) --
+ * it only saves every rec_ref_t-keyed caller from doing its own
+ * decimal formatting before indexing. Same return contract as
+ * stoma_index.
+ */
+int stoma_index_ref(stoma_db_t *db,
+	const char *field, rec_ref_t row_id, const char *value);
 
 /*
  * Query: every token of `query` must prefix-match in `field`.
@@ -84,7 +98,8 @@ uint32_t stoma_query_phrase(stoma_db_t *db,
  * Semantics are identical to stoma_query (phrase=0) / stoma_query_phrase
  * (phrase=1). Refs are appended to `out` (additive) and the set is sealed
  * (0 = ok). -1 on NULL args or when a matched row_id is not strictly decimal
- * (fill aborts; raw entry points still serve non-numeric stores). Zero-token
+ * or cannot be represented as a rec_ref_t (> UINT32_MAX) (fill aborts; raw
+ * entry points still serve non-numeric stores). Zero-token
  * or empty queries yield a sealed empty set (mirrors the handled=0 no-op).
  */
 int rec_axis_fill_tokens(stoma_db_t *db,

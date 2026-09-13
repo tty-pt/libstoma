@@ -884,7 +884,7 @@ int main(void)
 			      "decode invalid slot -> NULL");
 		}
 
-		/* 37. rec_axis_open (PLAN-REC-QUERY.md §4.3): opens a fresh
+		/* 37. rec_axis_open (RECALL-KERNEL.md): opens a fresh
 		 * stoma index from a decimal mask spec and returns a ctx
 		 * usable directly through the registered axis. */
 		{
@@ -937,6 +937,74 @@ int main(void)
 			}
 
 			stoma_close(odb);
+		}
+
+		/* 38. stoma_index_ref: rec_ref_t-native write path, id-
+		 * uniformity boundary shared with libjoint/libsepal/libislet
+		 * rec_axis_fill_* functions. rec_ref_t is u32; UINT32_MAX
+		 * round-trips index -> fill -> rank exactly. The string path
+		 * still accepts any decimal row_id at INDEX time, but the fill
+		 * aborts (> UINT32_MAX) rather than truncate to a wrong ref --
+		 * the strict-decimal contract extended to the u32 ceiling. */
+		{
+			rec_ref_t big = UINT32_MAX; /* u32 ceiling */
+
+			CHECK(stoma_index_ref(rdb, "title", big,
+			                       "Refwise Uniform") == 0,
+			      "stoma_index_ref max-u32 ref indexes ok");
+			{
+				rec_set_t *fs = fill_once(rdb, "title",
+				                          "refwise", 0);
+
+				CHECK(fs && rec_set_count(fs) == 1 &&
+				              rec_has(fs, big),
+				      "fill_tokens sees stoma_index_ref'd max-u32 ref");
+				if (fs)
+					rec_set_free(fs);
+			}
+			{
+				struct stoma_rank_ctx ctx = { rdb, "title", 1 };
+				float sc;
+
+				CHECK(stoma_rank(&ctx, big, &sc) == 0 &&
+				              float_close(sc, 0.5f),
+				      "stoma_rank on stoma_index_ref'd max-u32 ref");
+			}
+			CHECK(stoma_index_ref(NULL, "title", big, "x") == -1,
+			      "stoma_index_ref null db");
+			CHECK(stoma_index_ref(rdb, NULL, big, "x") == -1,
+			      "stoma_index_ref null field");
+			CHECK(stoma_index_ref(rdb, "title", big, NULL) == -1,
+			      "stoma_index_ref null value");
+
+			/* guard: a >UINT32_MAX decimal row_id is storable via the
+			 * string path (documented), but the fill must abort instead
+			 * of truncating. */
+			CHECK(stoma_index(rdb, "title", "5000000000",
+			                   "Outer Reach") == 0,
+			      "stoma_index stores >UINT32_MAX decimal row_id (string path)");
+			{
+				rec_set_t *fs = rec_set_new();
+				int rc = rec_axis_fill_tokens(rdb, "title",
+				                              "outer", 0, fs);
+
+				CHECK(rc == -1,
+				      "fill aborts on >UINT32_MAX row_id (no truncation)");
+				if (fs)
+					rec_set_free(fs);
+			}
+			{
+				unsigned hd = qmap_open(NULL, NULL, QM_STR,
+				                        QM_STR, 0xFF, 0);
+				int qhandled = 0;
+				uint32_t n = stoma_query(rdb, "title", "outer",
+				                         hd, &qhandled);
+
+				CHECK(n == 1 && qhandled == 1 &&
+				              hd_has(hd, "5000000000"),
+				      "raw stoma_query still serves >UINT32_MAX row_id (string path)");
+				qmap_close(hd);
+			}
 		}
 		stoma_close(rdb);
 	}

@@ -27,6 +27,13 @@ void stoma_clear(stoma_db_t *db);
 /* Index field value for record */
 int stoma_index(stoma_db_t *db, const char *field, const char *row_id, const char *value);
 
+/* rec_ref_t-native convenience: same as stoma_index but for callers whose
+   id is already a rec_ref_t (the id-uniformity boundary shared with
+   libjoint/libsepal/libislet's rec_axis_fill_* functions) -- formats the
+   canonical decimal row_id internally. Storage/key format is unchanged;
+   stoma_index's generic string row_id path is untouched. */
+int stoma_index_ref(stoma_db_t *db, const char *field, rec_ref_t row_id, const char *value);
+
 /* Query index with token prefix matching */
 uint32_t stoma_query(stoma_db_t *db, const char *field, const char *query,
                      uint32_t out_hd, int *handled);
@@ -34,6 +41,16 @@ uint32_t stoma_query(stoma_db_t *db, const char *field, const char *query,
 /* Query index for exact contiguous phrases */
 uint32_t stoma_query_phrase(stoma_db_t *db, const char *field, const char *query,
                             uint32_t out_hd, int *handled);
+
+/* Word-token iterator used by index and query paths */
+void stoma_tokenize(
+        const char *folded, void (*cb)(const char *tok, size_t len, void *user),
+        void *user);
+
+/* Newline-separated token-list helpers (normalize / contains / append) */
+int stoma_list_normalize(const char *input, char *out, size_t out_sz);
+int stoma_list_contains(const char *list, const char *token);
+int stoma_list_append(char *out, size_t out_sz, const char *token);
 ```
 
 ## Recall-kernel form
@@ -53,8 +70,8 @@ int rec_axis_fill_tokens(stoma_db_t *db, const char *field,
 
 /* FTS score ranker for the kernel loop: score = matched / token_count of the
    folded field text of decimal(ref). Shorter docs rank higher on ties.
-   Proposed consumer plan (rec_query R4): tokens(db, t) ∩ geo(b) ∩ time(r) →
-   soonest+FTS → top-k, composed via `rec_query_run` (PLAN-REC-QUERY §2). */
+   Composes as tokens(db, t) ∩ geo(b) ∩ time(r) → top-k via `rec_query_run`
+   (libqmap docs/RECALL-KERNEL.md, "Running a query"). */
 struct stoma_rank_ctx {
 	stoma_db_t *db;
 	const char *field;

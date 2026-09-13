@@ -134,6 +134,16 @@ int stoma_index(
 	return 0;
 }
 
+int stoma_index_ref(
+        stoma_db_t *db, const char *field, rec_ref_t row_id,
+        const char *value)
+{
+	char rid[24];
+
+	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)row_id);
+	return stoma_index(db, field, rid, value);
+}
+
 /* ---- query ---- */
 
 typedef struct {
@@ -234,6 +244,10 @@ static void stoma_dest_emit(stoma_dest_t *d, const char *row_id)
 		}
 		v = strtoull(row_id, &end, 10);
 		if (!end || *end != '\0' || errno == ERANGE) {
+			d->err = 1;
+			return;
+		}
+		if (v > UINT32_MAX) { /* rec_ref_t is u32: never alias upward */
 			d->err = 1;
 			return;
 		}
@@ -564,7 +578,7 @@ __attribute__((constructor)) static void stoma_rec_axis_init(void)
 }
 
 /*
- * rec_axis_open convention (PLAN-REC-QUERY.md §4.3, optional CLI-open
+ * rec_axis_open convention (RECALL-KERNEL.md "rec_axis_open convention", optional CLI-open
  * convention, not part of libqmap's core rec_query registry API): spec
  * is the decimal qmap hash mask for stoma_open() (empty/NULL -> 0, the
  * qmap default). Returns the stoma_db_t* ctx directly (no cast needed).

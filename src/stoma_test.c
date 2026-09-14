@@ -1009,6 +1009,132 @@ int main(void)
 		stoma_close(rdb);
 	}
 
+	/* 39. stoma_unindex / stoma_unindex_ref: the differential inverse
+	 * (Phase 2A 2A-2). index -> unindex must leave zero residual
+	 * postings for the row — every query token of the original doc must
+	 * no longer reach the row, while shared tokens still reach the
+	 * other rows — plus no doc side-table entry, per-field isolation,
+	 * and idempotent 0 on absent rows. Runs on a fresh db (the rdb
+	 * universe above is closed at this point; rdb is reused as the
+	 * fixture handle and cleared at the end). */
+	{
+		unsigned uhd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF,
+		                         0);
+		int qh = 0;
+		uint32_t n;
+		struct stoma_rank_ctx rctx;
+		float sc;
+
+		/* fresh db: the rdb universe above is closed here */
+		rdb = stoma_open(0);
+		CHECK(rdb != NULL, "unindex fixture db opens");
+
+		/* idempotent no-op before anything is stored */
+		CHECK(stoma_unindex(rdb, "u", "ghost") == 0,
+		      "unindex absent row -> 0");
+		CHECK(stoma_unindex_ref(rdb, "u", 777) == 0,
+		      "unindex_ref absent row -> 0");
+
+		CHECK(stoma_index(rdb, "u", "u1",
+		                   "Harbor Light Beacons") == 0,
+		      "unindex fixture u1");
+		CHECK(stoma_index(rdb, "u", "u2",
+		                   "Harbor Charts Beacons") == 0,
+		      "unindex fixture u2");
+		CHECK(stoma_index(rdb, "u", "u3",
+		                   "Distant Star") == 0,
+		      "unindex fixture u3");
+		/* same row in another field must survive the u-unindex */
+		CHECK(stoma_index(rdb, "v", "u2",
+		                   "Harbor Charts Beacons") == 0,
+		      "unindex fixture other field");
+
+		CHECK(stoma_unindex(rdb, "u", "u2") == 0,
+		      "stoma_unindex u2 ok");
+
+		/* exact residual sweep: posting keys only ever encode the
+		 * doc's own tokens, so querying every original token and
+		 * finding no trace of the row proves zero residual
+		 * postings. Shared tokens must still reach the other row. */
+		qmap_drop(uhd);
+		n = stoma_query(rdb, "u", "harbor", uhd, &qh);
+		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u1") &&
+		              !hd_has(uhd, "u2"),
+		      "unindex: shared token keeps u1, drops u2");
+		qmap_drop(uhd);
+		n = stoma_query(rdb, "u", "beacons", uhd, &qh);
+		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u1") &&
+		              !hd_has(uhd, "u2"),
+		      "unindex: shared token beacons keeps u1, drops u2");
+		qmap_drop(uhd);
+		n = stoma_query(rdb, "u", "charts", uhd, &qh);
+		CHECK(qh == 1 && n == 0, "unindex: u2-only token gone");
+		qmap_drop(uhd);
+		n = stoma_query(rdb, "u", "harbor beacons", uhd, &qh);
+		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u1") &&
+		              !hd_has(uhd, "u2"),
+		      "unindex: AND query keeps u1, drops u2");
+		qmap_drop(uhd);
+
+		/* untouched row and other field survive */
+		n = stoma_query(rdb, "u", "distant star", uhd, &qh);
+		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u3"),
+		      "unindex leaves u3 alone");
+		qmap_drop(uhd);
+		n = stoma_query(rdb, "v", "charts", uhd, &qh);
+		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u2"),
+		      "unindex is per-field (v/u2 survives)");
+
+		/* second unindex is the idempotent 0 */
+		CHECK(stoma_unindex(rdb, "u", "u2") == 0,
+		      "unindex twice -> 0");
+
+		/* duplicate-token docs collapse to one posting each and
+		 * unindex leaves zero residual for them too */
+		CHECK(stoma_index(rdb, "u", "u4", "la la la") == 0,
+		      "unindex fixture dup tokens");
+		CHECK(stoma_unindex(rdb, "u", "u4") == 0,
+		      "unindex dup-token doc ok");
+		n = stoma_query(rdb, "u", "la", uhd, &qh);
+		CHECK(qh == 1 && n == 0, "unindex: dup-token posting gone");
+
+		/* the decimal path: rank reads the doc side-table directly,
+		 * so rank --1 after unindex_ref proves the doc entry is
+		 * gone (and reindexing restores exactly one entry). */
+		CHECK(stoma_index_ref(rdb, "u", 778,
+		                       "Beacon Harbor Words") == 0,
+		      "unindex fixture decimal ref");
+		rctx.db = rdb;
+		rctx.field = "u";
+		rctx.matched = 1;
+		CHECK(stoma_rank(&rctx, 778, &sc) == 0,
+		      "rank sees indexed decimal ref");
+		CHECK(stoma_unindex_ref(rdb, "u", 778) == 0,
+		      "stoma_unindex_ref ok");
+		CHECK(stoma_rank(&rctx, 778, &sc) == -1,
+		      "rank misses after unindex_ref (doc entry gone)");
+		n = stoma_query(rdb, "u", "beacon", uhd, &qh);
+		CHECK(n == 0 || !hd_has(uhd, "778"),
+		      "unindex_ref: postings gone");
+		CHECK(stoma_unindex_ref(rdb, "u", 778) == 0,
+		      "unindex_ref twice -> 0");
+
+		/* NULL contracts mirror stoma_index */
+		CHECK(stoma_unindex(NULL, "u", "u1") == -1,
+		      "unindex null db");
+		CHECK(stoma_unindex(rdb, NULL, "u1") == -1,
+		      "unindex null field");
+		CHECK(stoma_unindex(rdb, "u", NULL) == -1,
+		      "unindex null row");
+		CHECK(stoma_unindex_ref(NULL, "u", 1) == -1,
+		      "unindex_ref null db");
+		CHECK(stoma_unindex_ref(rdb, NULL, 1) == -1,
+		      "unindex_ref null field");
+
+		qmap_close(uhd);
+		stoma_close(rdb);
+		rdb = NULL;
+	}
 	stoma_close(db);
 	qmap_close(out);
 

@@ -2,6 +2,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <dirent.h>
+#include <libgen.h>
+#include <time.h>
 #include <ttypt/qmap.h>
 #include "stoma/stoma.h"
 
@@ -142,6 +145,179 @@ int stoma_index_ref(
 
 	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)row_id);
 	return stoma_index(db, field, rid, value);
+}
+
+/* ---- unindex (the differential inverse of index) ---- */
+
+typedef struct {
+	const char *tok;
+	size_t len;
+} unindex_tok_t;
+
+typedef struct {
+	unindex_tok_t *ent;
+	size_t n;
+	size_t cap;
+} unindex_toks_t;
+
+static void collect_unindex_token(const char *tok, size_t len, void *user)
+{
+	unindex_toks_t *t = (unindex_toks_t *)user;
+
+	if (t->n == t->cap) {
+		size_t ncap = t->cap ? t->cap * 2 : 64;
+		unindex_tok_t *nt = realloc(t->ent, ncap * sizeof(*nt));
+
+		if (!nt)
+			return;
+		t->ent = nt;
+		t->cap = ncap;
+	}
+	t->ent[t->n].tok = tok;
+	t->ent[t->n].len = len;
+	t->n++;
+}
+
+int stoma_unindex(stoma_db_t *db, const char *field, const char *row_id)
+{
+	size_t fld;
+	size_t rid;
+	size_t dlen;
+	char *dkey;
+	const char *dtext;
+	unindex_toks_t toks;
+	size_t i;
+
+	if (!db || !field || !row_id)
+		return -1;
+	/* The posting keys only ever encode the doc's own tokens, so the
+	 * side-table text walks backwards to the exact keys index wrote. */
+	fld = strlen(field);
+	rid = strlen(row_id);
+	dlen = fld + 1 + rid;
+	dkey = malloc(dlen + 1);
+	if (!dkey)
+		return -1;
+	memcpy(dkey, field, fld);
+	dkey[fld] = '\t';
+	memcpy(dkey + fld + 1, row_id, rid);
+	dkey[dlen] = '\0';
+	dtext = (const char *)qmap_get(db->doc_hd, dkey);
+	if (!dtext) {
+		free(dkey);
+		return 0; /* absent (field,row): idempotent no-op */
+	}
+	memset(&toks, 0, sizeof(toks));
+	stoma_tokenize(dtext, collect_unindex_token, &toks);
+	/* Duplicate tokens collapsed at index time (same key replaces),
+	 * so deleting each occurrence's key is exact; repeats are
+	 * harmless no-ops. */
+	for (i = 0; i < toks.n; i++) {
+		size_t tlen = toks.ent[i].len;
+		size_t klen = fld + 1 + tlen + 1 + rid;
+		char *key = malloc(klen + 1);
+
+		if (!key)
+			continue;
+		memcpy(key, field, fld);
+		key[fld] = '\t';
+		memcpy(key + fld + 1, toks.ent[i].tok, tlen);
+		key[fld + 1 + tlen] = '\t';
+		memcpy(key + fld + 2 + tlen, row_id, rid);
+		key[klen] = '\0';
+		qmap_del(db->hd, key);
+		free(key);
+	}
+	free(toks.ent);
+	qmap_del(db->doc_hd, dkey);
+	free(dkey);
+	return 0;
+}
+
+int stoma_unindex_ref(stoma_db_t *db, const char *field, rec_ref_t row_id)
+{
+	char rid[24];
+
+	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)row_id);
+	return stoma_unindex(db, field, rid);
+}
+
+/* ---- rec_axis store / unstore / readback (Phase 2A) ---- */
+
+int rec_axis_store(void *ctx, const char *spec, rec_ref_t ref,
+	const char *value)
+{
+	stoma_db_t *db = ctx;
+
+	(void)spec; /* reserved — NULL */
+	if (!db || !value) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (!*value) { /* an empty string indexes nothing: loud reject */
+		errno = EINVAL;
+		return -1;
+	}
+	/* Replace-in-place: the ref owns exactly one doc, so erase any
+	 * previous entry first (idempotent when absent). */
+	if (stoma_unindex_ref(db, STOMA_AXIS_TEXT_FIELD, ref) != 0)
+		return -1;
+	return stoma_index_ref(db, STOMA_AXIS_TEXT_FIELD, ref, value);
+}
+
+int rec_axis_unstore(void *ctx, rec_ref_t ref)
+{
+	stoma_db_t *db = ctx;
+
+	if (!db) {
+		errno = EINVAL;
+		return -1;
+	}
+	/* stoma_unindex is already absent → 0; the idempotent contract. */
+	return stoma_unindex_ref(db, STOMA_AXIS_TEXT_FIELD, ref);
+}
+
+int rec_axis_readback(void *ctx, rec_ref_t ref, char **blob_out,
+	size_t *n_out)
+{
+	stoma_db_t *db = ctx;
+	char rid[24];
+	size_t fld;
+	size_t rlen;
+	char *dkey;
+	const char *dtext;
+	char *copy;
+
+	if (blob_out)
+		*blob_out = NULL;
+	if (n_out)
+		*n_out = 0;
+	if (!db || !blob_out || !n_out) {
+		errno = EINVAL;
+		return -1;
+	}
+	/* One entry: the stored (folded) doc text. The store keeps no
+	 * other copy, so read-back is exactly what queries see. */
+	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)ref);
+	fld = strlen(STOMA_AXIS_TEXT_FIELD);
+	rlen = strlen(rid);
+	dkey = malloc(fld + 1 + rlen + 1);
+	if (!dkey)
+		return -1;
+	memcpy(dkey, STOMA_AXIS_TEXT_FIELD, fld);
+	dkey[fld] = '\t';
+	memcpy(dkey + fld + 1, rid, rlen);
+	dkey[fld + 1 + rlen] = '\0';
+	dtext = (const char *)qmap_get(db->doc_hd, dkey);
+	free(dkey);
+	if (!dtext)
+		return 0; /* absent → NULL/0, still 0 */
+	copy = strdup(dtext);
+	if (!copy)
+		return -1;
+	*blob_out = copy;
+	*n_out = strlen(copy);
+	return 0;
 }
 
 /* ---- query ---- */
@@ -581,11 +757,118 @@ __attribute__((constructor)) static void stoma_rec_axis_init(void)
  * rec_axis_open convention (RECALL-KERNEL.md "rec_axis_open convention", optional CLI-open
  * convention, not part of libqmap's core rec_query registry API): spec
  * is the decimal qmap hash mask for stoma_open() (empty/NULL -> 0, the
- * qmap default). Returns the stoma_db_t* ctx directly (no cast needed).
+ * qmap default) — or, when it names a path (contains a '/'), a
+ * 2B-2 primary-seeded rebuild: stoma finds the primary qmap store via the
+ * CLI's `<primary>.roster` sidecar inside spec's directory, re-indexes
+ * every stored record (`:a:s` raw and `:a:u` decimal alike — keys
+ * iterate as refs, values as text), and emits the one-line rebuild
+ * budget note (mm-plan U4). Malformed/unfindable sidecar → loud warn,
+ * memory-only index (never silently empty). The primary open uses the
+ * CLI's mask derivation (D11): QMAP_MASK env (validated 2^n-1) else the
+ * 4095 default — co-opened files must always match. Returns the
+ * stoma_db_t* ctx directly (no cast needed).
  */
 void *rec_axis_open(const char *spec)
 {
 	unsigned mask;
+
+	if (spec && strchr(spec, '/')) {
+		stoma_db_t *db = stoma_open(0);
+		/* CLI mask derivation (D11): QMAP_MASK overrides the 4095
+		 * default — the sidecar rebuild must open the primary with
+		 * the same table shape the CLI wrote. */
+		const char *menv = getenv("QMAP_MASK");
+		unsigned pmask = 4096 - 1;
+		char *tmp = strdup(spec);
+		char *dir;
+		char *primary = NULL;
+		DIR *d;
+		struct dirent *de;
+		uint32_t hd;
+		uint32_t cur;
+		const void *key, *value;
+		size_t docs = 0;
+		struct timespec t0, t1;
+		double ms;
+
+		if (menv && *menv) {
+			unsigned long v = strtoul(menv, NULL, 10);
+			if (v != 0 && (v & (v + 1)) == 0)
+				pmask = (unsigned) v;
+		}
+
+		if (!db) {
+			free(tmp);
+			return NULL;
+		}
+		if (tmp)
+			dir = dirname(tmp);
+		else
+			dir = (char *)spec;
+
+		/* Primary = the <base> a `<base>.roster` sidecar prefixes. */
+		d = opendir(dir);
+		if (d) {
+			while ((de = readdir(d))) {
+				static const char suf[] = ".roster";
+				size_t n = strlen(de->d_name);
+				size_t sl = sizeof(suf) - 1;
+
+				if (n <= sl ||
+						strcmp(de->d_name + n - sl, suf) != 0)
+					continue;
+				{
+					size_t need = strlen(dir) + 1
+						+ (n - sl) + 1;
+					primary = malloc(need);
+					if (primary)
+						snprintf(primary, need, "%s/%.*s",
+								dir, (int)(n - sl),
+								de->d_name);
+				}
+				break;
+			}
+			closedir(d);
+		}
+
+		if (!primary) {
+			fprintf(stderr,
+				"stoma: no primary found in '%s' (no *.roster "
+				"sidecar); text queries stay empty\n",
+				dir);
+		} else {
+			hd = qmap_open(primary, "hd", QM_HNDL, QM_STR,
+					pmask, QM_AINDEX | QM_MIRROR);
+			if (!hd) {
+				fprintf(stderr,
+					"stoma: cannot open primary '%s'\n",
+					primary);
+			} else {
+				clock_gettime(CLOCK_MONOTONIC, &t0);
+				cur = qmap_iter(hd, NULL, 0);
+				while (qmap_next(&key, &value, cur)) {
+					rec_ref_t ref = 0;
+					memcpy(&ref, key,
+							qmap_type_len(QM_HNDL));
+					if (value)
+						stoma_index_ref(db,
+							STOMA_AXIS_TEXT_FIELD,
+							ref, (const char *)value);
+					docs++;
+				}
+				qmap_fin(cur);
+				clock_gettime(CLOCK_MONOTONIC, &t1);
+				ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0
+					+ (double)(t1.tv_nsec - t0.tv_nsec)
+					/ 1000000.0;
+				fprintf(stderr, "stoma: rebuilt %zu docs in "
+						"%.2f ms\n", docs, ms);
+			}
+		}
+		free(primary);
+		free(tmp);
+		return db;
+	}
 
 	mask = (spec && *spec) ? (unsigned)strtoul(spec, NULL, 10) : 0;
 	return stoma_open(mask);

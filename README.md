@@ -34,6 +34,30 @@ int stoma_index(stoma_db_t *db, const char *field, const char *row_id, const cha
    stoma_index's generic string row_id path is untouched. */
 int stoma_index_ref(stoma_db_t *db, const char *field, rec_ref_t row_id, const char *value);
 
+/* Differential inverse of stoma_index (Phase 2A): removes every posting
+   plus the doc side-table entry for (field, row_id) by re-tokenizing the
+   side-table text back to the exact posting keys. Cost is proportional to
+   the row's own tokens, never O(store). Idempotent: absent (field,row)
+   returns 0. -1 on invalid arguments. Zero new stored state. */
+int stoma_unindex(stoma_db_t *db, const char *field, const char *row_id);
+
+/* rec_ref_t-native convenience: same as stoma_unindex but for callers whose
+   id is already a rec_ref_t -- formats the canonical decimal row_id
+   internally. Same return contract as stoma_unindex. */
+int stoma_unindex_ref(stoma_db_t *db, const char *field, rec_ref_t row_id);
+
+/* Phase 2A store/unstore/readback adapters (RECALL-KERNEL.md, optional
+   CLI-specific -- not libqmap core API). The consumer passes (ref, value)
+   blindly; stoma stores the WHOLE value string's text under the canonical
+   "text" field (replace-in-place: a ref owns exactly one doc). store: 0 ok,
+   -1 errno EINVAL on bad args/empty value. unstore: removes the ref's entry,
+   idempotent absent -> 0. readback: one malloc'd buffer with the stored
+   (folded -- lowercased, accent-preserving) text as one NUL-joined entry,
+   n_out counts the display chars; absent -> NULL/0, still 0. */
+int rec_axis_store(void *ctx, const char *spec, rec_ref_t ref, const char *value);
+int rec_axis_unstore(void *ctx, rec_ref_t ref);
+int rec_axis_readback(void *ctx, rec_ref_t ref, char **blob_out, size_t *n_out);
+
 /* Query index with token prefix matching */
 uint32_t stoma_query(stoma_db_t *db, const char *field, const char *query,
                      uint32_t out_hd, int *handled);

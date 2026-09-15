@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <libgen.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <ttypt/qmap.h>
 #include "stoma/stoma.h"
@@ -758,15 +759,24 @@ __attribute__((constructor)) static void stoma_rec_axis_init(void)
  * convention, not part of libqmap's core rec_query registry API): spec
  * is the decimal qmap hash mask for stoma_open() (empty/NULL -> 0, the
  * qmap default) — or, when it names a path (contains a '/'), a
- * 2B-2 primary-seeded rebuild: stoma finds the primary qmap store via the
- * CLI's `<primary>.roster` sidecar inside spec's directory, re-indexes
- * every stored record (`:a:s` raw and `:a:u` decimal alike — keys
- * iterate as refs, values as text), and emits the one-line rebuild
- * budget note (mm-plan U4). Malformed/unfindable sidecar → loud warn,
- * memory-only index (never silently empty). The primary open uses the
- * CLI's mask derivation (D11): QMAP_MASK env (validated 2^n-1) else the
- * 4095 default — co-opened files must always match. Returns the
- * stoma_db_t* ctx directly (no cast needed).
+ * 2B-2 primary-seeded rebuild: stoma finds the primary qmap store and
+ * re-indexes every stored record (`:a:s` raw and `:a:u` decimal alike —
+ * keys iterate as refs, values as text), emitting the one-line rebuild
+ * budget note (mm-plan U4).
+ *
+ * Primary resolution (7-AXIS-NAMESPACE-PLAN.md B-1/B-2): the CLI publishes
+ * the exact primary it opened as QMAP_AXIS_PRIMARY, and stoma rebuilds
+ * from THAT primary (verbatim → aliases the live handle) when its
+ * `<primary>.roster` sidecar exists. Without the env it falls back to the
+ * directory scan (exactly one `*.roster` → use it; none → loud warn, empty).
+ * It NEVER guesses between sibling DBs: two or more rosters without the
+ * env → loud warn, memory-only index (never silently empty, never the
+ * wrong primary's data).
+ *
+ * Malformed/unfindable sidecar → loud warn, memory-only index. The
+ * primary open uses the CLI's mask derivation (D11): QMAP_MASK env
+ * (validated 2^n-1) else the 4095 default — co-opened files must always
+ * match. Returns the stoma_db_t* ctx directly (no cast needed).
  */
 void *rec_axis_open(const char *spec)
 {
@@ -778,6 +788,7 @@ void *rec_axis_open(const char *spec)
 		 * default — the sidecar rebuild must open the primary with
 		 * the same table shape the CLI wrote. */
 		const char *menv = getenv("QMAP_MASK");
+		const char *eprim = getenv("QMAP_AXIS_PRIMARY");
 		unsigned pmask = 4096 - 1;
 		char *tmp = strdup(spec);
 		char *dir;
@@ -790,6 +801,9 @@ void *rec_axis_open(const char *spec)
 		size_t docs = 0;
 		struct timespec t0, t1;
 		double ms;
+		/* -1 = directory scan never ran (QMAP_AXIS_PRIMARY used), else
+		 * the count of *.roster sidecars the scan saw. */
+		int nroster = -1;
 
 		if (menv && *menv) {
 			unsigned long v = strtoul(menv, NULL, 10);
@@ -806,32 +820,70 @@ void *rec_axis_open(const char *spec)
 		else
 			dir = (char *)spec;
 
-		/* Primary = the <base> a `<base>.roster` sidecar prefixes. */
-		d = opendir(dir);
-		if (d) {
-			while ((de = readdir(d))) {
-				static const char suf[] = ".roster";
-				size_t n = strlen(de->d_name);
-				size_t sl = sizeof(suf) - 1;
+		/* B-1 (7-AXIS-NAMESPACE-PLAN.md): the CLI published the exact
+		 * primary it opened. Rebuild from that verbatim path when its
+		 * roster sidecar exists — it aliases the live handle and can
+		 * never mis-pick a sibling DB. */
+		if (eprim && *eprim) {
+			char rs[BUFSIZ];
+			struct stat st;
 
-				if (n <= sl ||
-						strcmp(de->d_name + n - sl, suf) != 0)
-					continue;
-				{
-					size_t need = strlen(dir) + 1
-						+ (n - sl) + 1;
-					primary = malloc(need);
-					if (primary)
-						snprintf(primary, need, "%s/%.*s",
-								dir, (int)(n - sl),
-								de->d_name);
-				}
-				break;
-			}
-			closedir(d);
+			snprintf(rs, sizeof(rs), "%s.roster", eprim);
+			if (stat(rs, &st) == 0)
+				primary = strdup(eprim);
+			else
+				fprintf(stderr,
+					"stoma: QMAP_AXIS_PRIMARY '%s' has no "
+					"'%s'; falling back to the directory "
+					"scan\n",
+					eprim, rs);
 		}
 
 		if (!primary) {
+			nroster = 0;
+
+			d = opendir(dir);
+			if (d) {
+				while ((de = readdir(d))) {
+					static const char suf[] = ".roster";
+					size_t n = strlen(de->d_name);
+					size_t sl = sizeof(suf) - 1;
+
+					if (n <= sl ||
+							strcmp(de->d_name + n - sl,
+								suf) != 0)
+						continue;
+					nroster++;
+					if (nroster == 1) {
+						size_t need = strlen(dir) + 1
+							+ (n - sl) + 1;
+						primary = malloc(need);
+						if (primary)
+							snprintf(primary, need,
+								"%s/%.*s", dir,
+								(int)(n - sl),
+								de->d_name);
+					}
+				}
+				closedir(d);
+			}
+
+			/* B-2: never guess between sibling DBs. Zero rosters =
+			 * no primary (existing warn); two+ without the env =
+			 * loud warn, stay empty (not the wrong primary). */
+			if (nroster > 1) {
+				fprintf(stderr,
+					"stoma: %d roster sidecars in '%s'; "
+					"cannot pick a primary (set "
+					"QMAP_AXIS_PRIMARY to one DB); text "
+					"queries stay empty\n",
+					nroster, dir);
+				free(primary);
+				primary = NULL;
+			}
+		}
+
+		if (!primary && nroster == 0) {
 			fprintf(stderr,
 				"stoma: no primary found in '%s' (no *.roster "
 				"sidecar); text queries stay empty\n",

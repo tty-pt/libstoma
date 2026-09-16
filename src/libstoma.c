@@ -22,6 +22,10 @@ struct stoma_db {
 	                    (field,row) */
 };
 
+/* D14 axis-contributed CLI option state (rec_axis_config_arg). Decode
+ * merges it into the non-empty leaf path when the leaf omits query=. */
+static char *stoma_cli_query;
+
 stoma_db_t *stoma_open(unsigned mask)
 {
 	stoma_db_t *db;
@@ -683,6 +687,7 @@ static void *stoma_axis_decode(const char *s)
 {
 	struct rec_stoma_params *p;
 	char *buf, *cur;
+	int has_query = 0;
 
 	if (!s)
 		return NULL;
@@ -735,13 +740,19 @@ static void *stoma_axis_decode(const char *s)
 		(void)vlen;
 		if (!strcmp(key, "field"))
 			p->field = val;
-		else if (!strcmp(key, "query"))
+		else if (!strcmp(key, "query")) {
 			p->query = val;
+			has_query = 1;
+		}
 		else if (!strcmp(key, "phrase"))
 			p->phrase = atoi(val);
 		else if (!strcmp(key, "matched"))
 			p->matched = (size_t)atol(val);
 	}
+	/* D14 CLI merge: only the non-empty leaf path, and only when the
+	 * leaf omits query= (bare stoma and empty specs stay not-searchable). */
+	if (*s && !has_query && stoma_cli_query)
+		p->query = stoma_cli_query;
 	return p;
 }
 
@@ -924,4 +935,48 @@ void *rec_axis_open(const char *spec)
 
 	mask = (spec && *spec) ? (unsigned)strtoul(spec, NULL, 10) : 0;
 	return stoma_open(mask);
+}
+
+/*
+ * rec_axis_cli_options / rec_axis_config_arg conventions (D14: optional
+ * axis-contributed CLI options — not libqmap core API): qmap collects
+ * inline `--name=value` tokens and, once every bound axis is connected,
+ * broadcasts each to the declarations via these dlsym'd symbols. stoma
+ * declares `query` (the full-text query text); decode merges it ONLY in
+ * the non-empty leaf path when the leaf omits query= (a bare `stoma`
+ * stays not-searchable — field="" hazard). The option struct mirrors
+ * libqmap's local layout; the two are never compiled together.
+ */
+struct rec_axis_cli_option {
+	const char *name;
+	int has_arg;
+	const char *help;
+};
+
+const struct rec_axis_cli_option *
+rec_axis_cli_options(void)
+{
+	static const struct rec_axis_cli_option opts[] = {
+		{ "query", 1, "full-text query" },
+		{ NULL, 0, NULL }
+	};
+	return opts;
+}
+
+int
+rec_axis_config_arg(const char *name, const char *value)
+{
+	char *copy;
+
+	if (!name || !value)
+		return -1;
+	if (!strcmp(name, "query")) {
+		copy = strdup(value);
+		if (!copy)
+			return -1;
+		free(stoma_cli_query);
+		stoma_cli_query = copy;
+		return 0;
+	}
+	return -1;
 }

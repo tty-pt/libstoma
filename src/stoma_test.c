@@ -884,6 +884,104 @@ int main(void)
 			      "decode invalid slot -> NULL");
 		}
 
+		/* 36b. D14 rec_axis_cli_options / rec_axis_config_arg
+		 * convention: stoma declares the generic `query` flag; decode
+		 * merges it ONLY in the non-NULL, non-empty leaf path when the
+		 * leaf omits query= (bare stoma stays not-searchable, and an
+		 * empty spec keeps query=""). */
+		{
+			int slot = -1;
+			int i;
+			const rec_axis_t *axis;
+			extern const struct stoma_cli_read {
+				const char *name;
+				int has_arg;
+				const char *help;
+			} *rec_axis_cli_options(void);
+			extern int rec_axis_config_arg(const char *, const char *);
+			struct stoma_params_read {
+				const char *field;
+				const char *query;
+				int phrase;
+				size_t matched;
+			};
+			const struct stoma_cli_read *o;
+			int n = 0;
+
+			for (i = 0; i < rec_axis_count(); i++) {
+				axis = rec_axis_get(i);
+				if (axis && !strcmp(axis->name, "stoma")) {
+					slot = i;
+					break;
+				}
+			}
+			CHECK(slot >= 0, "stoma axis registered (cli test)");
+			axis = slot >= 0 ? rec_axis_get(slot) : NULL;
+
+			o = rec_axis_cli_options();
+			while (o && o[n].name)
+				n++;
+			CHECK(n == 1, "cli table: query only");
+			CHECK(o && !strcmp(o[0].name, "query"),
+			      "option is query");
+			CHECK(o && o[0].has_arg == 1, "query takes a value");
+			CHECK(rec_axis_config_arg("query", NULL) != 0,
+			      "query NULL rejected");
+			CHECK(rec_axis_config_arg("bogus", "x") != 0,
+			      "unknown option rejected");
+
+			/* bare NULL spec stays NULL even with --query */
+			CHECK(rec_axis_config_arg("query", "harbor") == 0,
+			      "config_arg query ok");
+			CHECK(!axis || axis->decode(NULL) == NULL,
+			      "bare stoma with --query stays NULL");
+
+			/* leaf omitting query= merges the CLI query */
+			{
+				void *p = slot < 0 ? NULL
+				        : rec_axis_decode(
+					          slot, "field=title matched=1");
+				CHECK(p != NULL, "decode merges CLI query");
+				if (p) {
+					struct stoma_params_read *sp = p;
+					CHECK(sp->field != NULL &&
+					              !strcmp(sp->field, "title"),
+					      "field from leaf");
+					CHECK(sp->query != NULL &&
+					              !strcmp(sp->query, "harbor"),
+					      "query from CLI");
+				}
+			}
+
+			/* a leaf query= wins over --query */
+			{
+				void *p = slot < 0 ? NULL
+				        : rec_axis_decode(
+					          slot, "field=title query=leaftext");
+				CHECK(p != NULL, "decode leaf query present");
+				if (p) {
+					struct stoma_params_read *sp = p;
+					CHECK(sp->query != NULL &&
+					              !strcmp(sp->query, "leaftext"),
+					      "leaf query beats --query");
+				}
+			}
+
+			/* empty spec: allocates, keeps query="" (no merge) */
+			{
+				void *p = slot < 0 ? NULL
+				        : rec_axis_decode(slot, "");
+				CHECK(p != NULL,
+				      "decode empty string allocates (cli)");
+				if (p) {
+					struct stoma_params_read *sp = p;
+					CHECK(sp->query != NULL &&
+					              sp->query[0] == '\0',
+					      "empty spec keeps query empty");
+				}
+			}
+		}
+
 		/* 37. rec_axis_open (RECALL-KERNEL.md): opens a fresh
 		 * stoma index from a decimal mask spec and returns a ctx
 		 * usable directly through the registered axis. */

@@ -885,10 +885,10 @@ int main(void)
 		}
 
 		/* 36b. D14 rec_axis_cli_options / rec_axis_config_arg
-		 * convention: stoma declares the generic `query` flag; decode
-		 * merges it ONLY in the non-NULL, non-empty leaf path when the
-		 * leaf omits query= (bare stoma stays not-searchable, and an
-		 * empty spec keeps query=""). */
+		 * convention (round 2): stoma declares query/field/phrase/
+		 * matched; decode defaults field to "text" and makes a bare
+		 * `stoma` searchable when CLI state says so (bare + --query →
+		 * non-NULL; empty spec keeps query=""). Leaf spec wins. */
 		{
 			int slot = -1;
 			int i;
@@ -907,6 +907,7 @@ int main(void)
 			};
 			const struct stoma_cli_read *o;
 			int n = 0;
+			void *p;
 
 			for (i = 0; i < rec_axis_count(); i++) {
 				axis = rec_axis_get(i);
@@ -921,63 +922,122 @@ int main(void)
 			o = rec_axis_cli_options();
 			while (o && o[n].name)
 				n++;
-			CHECK(n == 1, "cli table: query only");
-			CHECK(o && !strcmp(o[0].name, "query"),
-			      "option is query");
-			CHECK(o && o[0].has_arg == 1, "query takes a value");
+			CHECK(n == 4, "cli table: query field phrase matched");
+			CHECK(o && !strcmp(o[0].name, "query") && o[0].has_arg == 1,
+			      "query takes a value");
+			CHECK(o && !strcmp(o[1].name, "field") && o[1].has_arg == 1,
+			      "field takes a value");
+			CHECK(o && !strcmp(o[2].name, "phrase") && o[2].has_arg == 1,
+			      "phrase takes a value");
+			CHECK(o && !strcmp(o[3].name, "matched") && o[3].has_arg == 1,
+			      "matched takes a value");
 			CHECK(rec_axis_config_arg("query", NULL) != 0,
 			      "query NULL rejected");
+			CHECK(rec_axis_config_arg("field", NULL) != 0,
+			      "field NULL rejected");
+			CHECK(rec_axis_config_arg("phrase", NULL) != 0,
+			      "phrase NULL rejected");
+			CHECK(rec_axis_config_arg("matched", NULL) != 0,
+			      "matched NULL rejected");
 			CHECK(rec_axis_config_arg("bogus", "x") != 0,
 			      "unknown option rejected");
+			CHECK(rec_axis_config_arg("phrase", "2") != 0,
+			      "phrase 2 rejected");
+			CHECK(rec_axis_config_arg("phrase", "abc") != 0,
+			      "phrase abc rejected");
+			CHECK(rec_axis_config_arg("matched", "x") != 0,
+			      "matched x rejected");
+			CHECK(rec_axis_config_arg("matched", "-1") != 0,
+			      "matched -1 rejected");
 
-			/* bare NULL spec stays NULL even with --query */
+			/* bare stoma with NO CLI query → still NULL */
+			p = axis ? axis->decode(NULL) : NULL;
+			CHECK(p == NULL, "bare stoma without --query is NULL");
+
+			/* bare + --query only → field defaults to text */
 			CHECK(rec_axis_config_arg("query", "harbor") == 0,
 			      "config_arg query ok");
-			CHECK(!axis || axis->decode(NULL) == NULL,
-			      "bare stoma with --query stays NULL");
+			p = axis ? axis->decode(NULL) : NULL;
+			CHECK(p != NULL, "bare stoma with --query searchable");
+			if (p) {
+				struct stoma_params_read *sp = p;
+				CHECK(sp->field != NULL &&
+				              !strcmp(sp->field, "text"),
+				      "bare field defaults to text");
+				CHECK(sp->query != NULL &&
+				              !strcmp(sp->query, "harbor"),
+				      "bare query from CLI");
+				CHECK(sp->phrase == 0, "bare phrase stays 0");
+				CHECK(sp->matched == 0, "bare matched stays 0");
+			}
 
-			/* leaf omitting query= merges the CLI query */
+			/* field/phrase/matched accepted; full CLI on bare spec */
+			CHECK(rec_axis_config_arg("field", "text") == 0 &&
+			              rec_axis_config_arg("phrase", "1") == 0 &&
+			              rec_axis_config_arg("matched", "1") == 0,
+			      "field/phrase/matched accepted");
+			p = axis ? axis->decode(NULL) : NULL;
+			CHECK(p != NULL, "bare with full CLI");
+			if (p) {
+				struct stoma_params_read *sp = p;
+				CHECK(sp->field != NULL &&
+				              !strcmp(sp->field, "text"),
+				      "bare field from CLI");
+				CHECK(sp->phrase == 1, "bare phrase from CLI");
+				CHECK(sp->matched == 1, "bare matched from CLI");
+			}
+
+			/* leaf omitting query= merges the CLI query/field/etc */
 			{
-				void *p = slot < 0 ? NULL
+				struct stoma_params_read *sp;
+				p = slot < 0 ? NULL
 				        : rec_axis_decode(
 					          slot, "field=title matched=1");
 				CHECK(p != NULL, "decode merges CLI query");
 				if (p) {
-					struct stoma_params_read *sp = p;
+					sp = p;
 					CHECK(sp->field != NULL &&
 					              !strcmp(sp->field, "title"),
 					      "field from leaf");
 					CHECK(sp->query != NULL &&
 					              !strcmp(sp->query, "harbor"),
 					      "query from CLI");
+					CHECK(sp->matched == 1, "matched from leaf");
 				}
 			}
 
-			/* a leaf query= wins over --query */
+			/* a leaf query= wins over --query; leaf phrase/matched win */
 			{
-				void *p = slot < 0 ? NULL
+				struct stoma_params_read *sp;
+				p = slot < 0 ? NULL
 				        : rec_axis_decode(
-					          slot, "field=title query=leaftext");
+					          slot, "field=title query=leaftext phrase=0");
 				CHECK(p != NULL, "decode leaf query present");
 				if (p) {
-					struct stoma_params_read *sp = p;
+					sp = p;
 					CHECK(sp->query != NULL &&
 					              !strcmp(sp->query, "leaftext"),
 					      "leaf query beats --query");
+					CHECK(sp->phrase == 0,
+					      "leaf phrase beats --phrase");
 				}
 			}
 
-			/* empty spec: allocates, keeps query="" (no merge) */
+			/* empty spec: allocates, keeps query="" (no bare merge) */
 			{
-				void *p = slot < 0 ? NULL
+				struct stoma_params_read *sp;
+				p = slot < 0 ? NULL
 				        : rec_axis_decode(slot, "");
 				CHECK(p != NULL,
 				      "decode empty string allocates (cli)");
 				if (p) {
-					struct stoma_params_read *sp = p;
+					sp = p;
 					CHECK(sp->query != NULL &&
 					              sp->query[0] == '\0',
 					      "empty spec keeps query empty");
+					CHECK(sp->field != NULL &&
+					              !strcmp(sp->field, "text"),
+					      "empty spec field defaults to text");
 				}
 			}
 		}

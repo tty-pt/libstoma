@@ -22,9 +22,15 @@ struct stoma_db {
 	                    (field,row) */
 };
 
-/* D14 axis-contributed CLI option state (rec_axis_config_arg). Decode
- * merges it into the non-empty leaf path when the leaf omits query=. */
+/* D14 axis-contributed CLI option state (rec_axis_config_arg, round 2).
+ * decode merges it into the bare/empty spec path (searchable when --query
+ * is present; field defaults to "text") and fills fields a non-empty leaf
+ * omits. */
 static char *stoma_cli_query;
+static char *stoma_cli_field;
+static int stoma_cli_phrase;
+static size_t stoma_cli_matched;
+static int stoma_cli_field_set, stoma_cli_phrase_set, stoma_cli_matched_set;
 
 stoma_db_t *stoma_open(unsigned mask)
 {
@@ -687,22 +693,42 @@ static void *stoma_axis_decode(const char *s)
 {
 	struct rec_stoma_params *p;
 	char *buf, *cur;
-	int has_query = 0;
+	int has_query = 0, has_field = 0, has_phrase = 0, has_matched = 0;
 
-	if (!s)
-		return NULL;
 	p = calloc(1, sizeof(*p));
-	buf = malloc(strlen(s) + 1);
-	if (!p || !buf) {
-		free(p);
-		free(buf);
+	if (!p)
 		return NULL;
-	}
-	strcpy(buf, s);
-	p->field = "";
+	p->field = STOMA_AXIS_TEXT_FIELD;
 	p->query = "";
 	p->phrase = 0;
 	p->matched = 0;
+
+	/* bare spec: searchable only when a CLI --query is present (field
+	 * defaults to "text" — the documented store field, so there is no
+	 * field="" hazard). Otherwise NULL (loud fill failure, unchanged). */
+	if (!s) {
+		if (!stoma_cli_query) {
+			free(p);
+			return NULL;
+		}
+		p->field = stoma_cli_field_set ? stoma_cli_field
+		                              : STOMA_AXIS_TEXT_FIELD;
+		p->query = stoma_cli_query;
+		p->phrase = stoma_cli_phrase;
+		p->matched = stoma_cli_matched;
+		return p;
+	}
+
+	/* empty spec stays a degenerate query (query="" -> no matches) */
+	if (!*s)
+		return p;
+
+	buf = malloc(strlen(s) + 1);
+	if (!buf) {
+		free(p);
+		return NULL;
+	}
+	strcpy(buf, s);
 	cur = buf;
 	while (*cur) {
 		char *key, *val;
@@ -738,21 +764,36 @@ static void *stoma_axis_decode(const char *s)
 				*cur++ = '\0';
 		}
 		(void)vlen;
-		if (!strcmp(key, "field"))
+		if (!strcmp(key, "field")) {
 			p->field = val;
+			if (!*p->field)
+				p->field = STOMA_AXIS_TEXT_FIELD;
+			has_field = 1;
+		}
 		else if (!strcmp(key, "query")) {
 			p->query = val;
 			has_query = 1;
 		}
-		else if (!strcmp(key, "phrase"))
+		else if (!strcmp(key, "phrase")) {
 			p->phrase = atoi(val);
-		else if (!strcmp(key, "matched"))
+			has_phrase = 1;
+		}
+		else if (!strcmp(key, "matched")) {
 			p->matched = (size_t)atol(val);
+			has_matched = 1;
+		}
 	}
-	/* D14 CLI merge: only the non-empty leaf path, and only when the
-	 * leaf omits query= (bare stoma and empty specs stay not-searchable). */
-	if (*s && !has_query && stoma_cli_query)
+	/* NOTE: buf is intentionally never freed — the params strings point
+	 * into it and the structs live for the whole one-shot CLI process. */
+	/* D14 CLI merge (round 2): fill the fields the leaf omitted */
+	if (!has_query && stoma_cli_query)
 		p->query = stoma_cli_query;
+	if (!has_field && stoma_cli_field_set)
+		p->field = stoma_cli_field;
+	if (!has_phrase && stoma_cli_phrase_set)
+		p->phrase = stoma_cli_phrase;
+	if (!has_matched && stoma_cli_matched_set)
+		p->matched = stoma_cli_matched;
 	return p;
 }
 
@@ -938,14 +979,14 @@ void *rec_axis_open(const char *spec)
 }
 
 /*
- * rec_axis_cli_options / rec_axis_config_arg conventions (D14: optional
- * axis-contributed CLI options — not libqmap core API): qmap collects
- * inline `--name=value` tokens and, once every bound axis is connected,
- * broadcasts each to the declarations via these dlsym'd symbols. stoma
- * declares `query` (the full-text query text); decode merges it ONLY in
- * the non-empty leaf path when the leaf omits query= (a bare `stoma`
- * stays not-searchable — field="" hazard). The option struct mirrors
- * libqmap's local layout; the two are never compiled together.
+ * rec_axis_cli_options / rec_axis_config_arg conventions (D14, round 2:
+ * optional axis-contributed CLI options — not libqmap core API): qmap
+ * collects inline `--name=value` tokens and, once every bound axis is
+ * connected, broadcasts each to the declarations via these dlsym'd symbols.
+ * stoma declares `query` (full-text query), `field` (query field), `phrase`
+ * and `matched`; decode merges them into the bare/empty/leaf paths (leaf
+ * spec wins; field defaults to "text"). The option struct mirrors libqmap's
+ * local layout; the two are never compiled together.
  */
 struct rec_axis_cli_option {
 	const char *name;
@@ -958,15 +999,48 @@ rec_axis_cli_options(void)
 {
 	static const struct rec_axis_cli_option opts[] = {
 		{ "query", 1, "full-text query" },
+		{ "field", 1, "text field to query" },
+		{ "phrase", 1, "phrase match 0|1" },
+		{ "matched", 1, "rank matched-token numerator" },
 		{ NULL, 0, NULL }
 	};
 	return opts;
+}
+
+static int stoma_parse_int(const char *value, int *out)
+{
+	char *end;
+
+	if (!value || !*value)
+		return -1;
+	errno = 0;
+	*out = (int)strtol(value, &end, 10);
+	if (errno || end == value || *end != '\0')
+		return -1;
+	return 0;
+}
+
+static int stoma_parse_size(const char *value, size_t *out)
+{
+	char *end;
+	unsigned long long v;
+
+	if (!value || !*value || value[0] == '-')
+		return -1;
+	errno = 0;
+	v = strtoull(value, &end, 10);
+	if (errno || end == value || *end != '\0')
+		return -1;
+	*out = (size_t)v;
+	return 0;
 }
 
 int
 rec_axis_config_arg(const char *name, const char *value)
 {
 	char *copy;
+	int iv;
+	size_t nv;
 
 	if (!name || !value)
 		return -1;
@@ -976,6 +1050,29 @@ rec_axis_config_arg(const char *name, const char *value)
 			return -1;
 		free(stoma_cli_query);
 		stoma_cli_query = copy;
+		return 0;
+	}
+	if (!strcmp(name, "field")) {
+		copy = strdup(value);
+		if (!copy)
+			return -1;
+		free(stoma_cli_field);
+		stoma_cli_field = copy;
+		stoma_cli_field_set = 1;
+		return 0;
+	}
+	if (!strcmp(name, "phrase")) {
+		if (stoma_parse_int(value, &iv) != 0 || (iv != 0 && iv != 1))
+			return -1;
+		stoma_cli_phrase = iv;
+		stoma_cli_phrase_set = 1;
+		return 0;
+	}
+	if (!strcmp(name, "matched")) {
+		if (stoma_parse_size(value, &nv) != 0)
+			return -1;
+		stoma_cli_matched = nv;
+		stoma_cli_matched_set = 1;
 		return 0;
 	}
 	return -1;

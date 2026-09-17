@@ -685,14 +685,17 @@ static int stoma_axis_rank(void *ctx, void *params, rec_ref_t ref, float *score)
 
 /*
  * Decode "field=body query='hello world' phrase=1 matched=2" into a
- * heap-owned rec_stoma_params (freed never — one-shot CLI process lifetime,
- * matches the other axis decode fns). query/field default to "", phrase/
- * matched default to 0. Single-quoted values may contain spaces.
+ * heap-owned rec_stoma_params. query/field default to "", phrase/
+ * matched default to 0. Single-quoted values may contain spaces. The
+ * decode-spec grammar is kernel-owned (ttypt/rec.h rec_spec_next); the
+ * scan buffer is freed before returning (the kept field/query strings
+ * are owned copies).
  */
 static void *stoma_axis_decode(const char *s)
 {
 	struct rec_stoma_params *p;
-	char *buf, *cur;
+	char *buf = NULL;
+	const char *q_leaf = NULL, *f_leaf = NULL;
 	int has_query = 0, has_field = 0, has_phrase = 0, has_matched = 0;
 
 	p = calloc(1, sizeof(*p));
@@ -723,64 +726,25 @@ static void *stoma_axis_decode(const char *s)
 	if (!*s)
 		return p;
 
-	buf = malloc(strlen(s) + 1);
+	/* The decode-spec grammar is kernel-owned (ttypt/rec.h
+	 * rec_spec_next); the scan buffer is freed before returning (the kept
+	 * strings are taken as owned copies, ¶5 — the CLI fallbacks stay
+	 * borrowed process-lifetime globals). */
+	buf = strdup(s);
 	if (!buf) {
 		free(p);
 		return NULL;
 	}
-	strcpy(buf, s);
-	cur = buf;
-	while (*cur) {
-		char *key, *val;
-		size_t vlen;
-
-		while (*cur == ' ')
-			cur++;
-		if (!*cur)
-			break;
-		key = cur;
-		while (*cur && *cur != '=' && *cur != ' ')
-			cur++;
-		if (*cur != '=') {
-			if (*cur)
-				cur++;
+	for (char *cur = buf, *key, *val;
+	     rec_spec_next(&cur, &key, &val); ) {
+		if (!val)
 			continue;
-		}
-		*cur++ = '\0';
-		if (*cur == '\'') {
-			char *dst;
-			cur++;
-			val = dst = cur;
-			while (*cur) {
-				if (*cur == '\\' && cur[1]) {
-					cur++;
-					*dst++ = *cur++;
-				} else if (*cur == '\'') {
-					cur++;
-					break;
-				} else {
-					*dst++ = *cur++;
-				}
-			}
-			*dst = '\0';
-			vlen = (size_t)(dst - val);
-		} else {
-			val = cur;
-			while (*cur && *cur != ' ')
-				cur++;
-			vlen = (size_t)(cur - val);
-			if (*cur)
-				*cur++ = '\0';
-		}
-		(void)vlen;
 		if (!strcmp(key, "field")) {
-			p->field = val;
-			if (!*p->field)
-				p->field = STOMA_AXIS_TEXT_FIELD;
+			f_leaf = val;
 			has_field = 1;
 		}
 		else if (!strcmp(key, "query")) {
-			p->query = val;
+			q_leaf = val;
 			has_query = 1;
 		}
 		else if (!strcmp(key, "phrase")) {
@@ -792,17 +756,40 @@ static void *stoma_axis_decode(const char *s)
 			has_matched = 1;
 		}
 	}
-	/* NOTE: buf is intentionally never freed — the params strings point
-	 * into it and the structs live for the whole one-shot CLI process. */
-	/* D14 CLI merge (round 2): fill the fields the leaf omitted */
-	if (!has_query && stoma_cli_query)
+	/* D14 CLI merge (round 2): fill the fields the leaf omitted. Leaf
+	 * wins — even an empty leaf value (field= → the "text" default,
+	 * exactly as before). */
+	if (has_query) {
+		p->query = strdup(q_leaf);
+		if (!p->query) {
+			free(p);
+			free(buf);
+			return NULL;
+		}
+	} else if (stoma_cli_query) {
 		p->query = stoma_cli_query;
-	if (!has_field && stoma_cli_field_set)
+	}
+	if (has_field) {
+		if (*f_leaf) {
+			char *fc = strdup(f_leaf);
+
+			if (!fc) {
+				if (has_query)
+					free((char *)p->query);
+				free(p);
+				free(buf);
+				return NULL;
+			}
+			p->field = fc;
+		}                       /* empty leaf → keep "text" default */
+	} else if (stoma_cli_field_set) {
 		p->field = stoma_cli_field;
+	}
 	if (!has_phrase && stoma_cli_phrase_set)
 		p->phrase = stoma_cli_phrase;
 	if (!has_matched && stoma_cli_matched_set)
 		p->matched = stoma_cli_matched;
+	free(buf);
 	return p;
 }
 
@@ -994,15 +981,9 @@ void *rec_axis_open(const char *spec)
  * connected, broadcasts each to the declarations via these dlsym'd symbols.
  * stoma declares `query` (full-text query), `field` (query field), `phrase`
  * and `matched`; decode merges them into the bare/empty/leaf paths (leaf
- * spec wins; field defaults to "text"). The option struct mirrors libqmap's
- * local layout; the two are never compiled together.
+ * spec wins; field defaults to "text"). The option struct ABI is
+ * kernel-owned in <ttypt/rec.h>.
  */
-struct rec_axis_cli_option {
-	const char *name;
-	int has_arg;
-	const char *help;
-};
-
 const struct rec_axis_cli_option *
 rec_axis_cli_options(void)
 {
@@ -1016,69 +997,31 @@ rec_axis_cli_options(void)
 	return opts;
 }
 
-static int stoma_parse_int(const char *value, int *out)
-{
-	char *end;
-
-	if (!value || !*value)
-		return -1;
-	errno = 0;
-	*out = (int)strtol(value, &end, 10);
-	if (errno || end == value || *end != '\0')
-		return -1;
-	return 0;
-}
-
-static int stoma_parse_size(const char *value, size_t *out)
-{
-	char *end;
-	unsigned long long v;
-
-	if (!value || !*value || value[0] == '-')
-		return -1;
-	errno = 0;
-	v = strtoull(value, &end, 10);
-	if (errno || end == value || *end != '\0')
-		return -1;
-	*out = (size_t)v;
-	return 0;
-}
-
 int
 rec_axis_config_arg(const char *name, const char *value)
 {
-	char *copy;
 	int iv;
 	size_t nv;
 
 	if (!name || !value)
 		return -1;
-	if (!strcmp(name, "query")) {
-		copy = strdup(value);
-		if (!copy)
-			return -1;
-		free(stoma_cli_query);
-		stoma_cli_query = copy;
-		return 0;
-	}
+	if (!strcmp(name, "query"))
+		return rec_cli_str_set(&stoma_cli_query, value);
 	if (!strcmp(name, "field")) {
-		copy = strdup(value);
-		if (!copy)
+		if (rec_cli_str_set(&stoma_cli_field, value) != 0)
 			return -1;
-		free(stoma_cli_field);
-		stoma_cli_field = copy;
 		stoma_cli_field_set = 1;
 		return 0;
 	}
 	if (!strcmp(name, "phrase")) {
-		if (stoma_parse_int(value, &iv) != 0 || (iv != 0 && iv != 1))
+		if (rec_cli_int(value, &iv) != 0 || (iv != 0 && iv != 1))
 			return -1;
 		stoma_cli_phrase = iv;
 		stoma_cli_phrase_set = 1;
 		return 0;
 	}
 	if (!strcmp(name, "matched")) {
-		if (stoma_parse_size(value, &nv) != 0)
+		if (rec_cli_size(value, &nv) != 0)
 			return -1;
 		stoma_cli_matched = nv;
 		stoma_cli_matched_set = 1;

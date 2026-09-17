@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <ttypt/qmap.h>
 #include <ttypt/rec.h>
+#include <ttypt/qsys.h>
 #include "stoma/stoma.h"
 
 static int failures = 0;
@@ -169,7 +170,7 @@ int main(void)
 		return 1;
 	}
 	/* Deterministic mask (D11): the rebuild re-opens with this shape. */
-	(void)setenv("QMAP_MASK", "4095", 1);
+	(void)qsys_setenv("QMAP_MASK", "4095", 1);
 
 	ha = seed_primary(d1, "A.db", 1, "chirpy alpha harbour");
 	hb = seed_primary(d1, "B.db", 1, "gamma beacon fjord");
@@ -178,7 +179,7 @@ int main(void)
 
 	/* ── B-1: env primary wins with two rosters present ── */
 	snprintf(prim, sizeof(prim), "%s/A.db", d1);
-	(void)setenv("QMAP_AXIS_PRIMARY", prim, 1);
+	(void)qsys_setenv("QMAP_AXIS_PRIMARY", prim, 1);
 	snprintf(logf, sizeof(logf), "%s/cap.log", d1);
 	snprintf(spec, sizeof(spec), "%s/A.db-stoma", d1);
 	cap_begin(logf);
@@ -195,7 +196,7 @@ int main(void)
 		stoma_close(dbctx);
 
 	/* ── B-2: two rosters, no env → loud warn, valid empty index ── */
-	(void)setenv("QMAP_AXIS_PRIMARY", "", 1);
+	(void)qsys_setenv("QMAP_AXIS_PRIMARY", "", 1);
 	cap_begin(logf);
 	dbctx = rec_axis_open(spec);
 	log = cap_end();
@@ -226,7 +227,7 @@ int main(void)
 
 	/* ── env set but sidecar missing → warn + still fall back ── */
 	snprintf(prim, sizeof(prim), "%s/nope.db", d2);
-	(void)setenv("QMAP_AXIS_PRIMARY", prim, 1);
+	(void)qsys_setenv("QMAP_AXIS_PRIMARY", prim, 1);
 	cap_begin(logf);
 	dbctx = rec_axis_open(spec);
 	log = cap_end();

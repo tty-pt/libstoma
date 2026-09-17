@@ -7,7 +7,7 @@ LDLIBS-stoma_test := -lstoma -lqmap
 LDLIBS-stoma_prop_test := -lstoma -lqmap
 LDLIBS-stoma_axis_store_test := -lstoma -lqmap
 LDLIBS-stoma_axis_roundtrip_test := -lstoma -lqmap
-LDLIBS-stoma_axis_rebuild_test := -lstoma -lqmap
+LDLIBS-stoma_axis_rebuild_test := -lstoma -lqmap -lqsys
 
 CFLAGS += -I/home/quirinpa/site/external/libqmap/include
 

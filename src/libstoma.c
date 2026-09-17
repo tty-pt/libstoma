@@ -447,9 +447,14 @@ static uint32_t stoma_query_any(
         int *handled, int phrase)
 {
 	collect_ctx_t toks;
+	char fold_stack[256];
+	char *folded;
+	char *prefix = NULL;
+	char *dkey = NULL;
+	size_t dcap = 0;
 	size_t fld;
 	size_t qlen;
-	char *folded;
+	size_t pw = 0;
 	unsigned cur_hd = 0;
 	uint32_t matches = 0;
 	size_t i;
@@ -460,47 +465,60 @@ static uint32_t stoma_query_any(
 		return 0;
 	if (!out->hd && !out->set)
 		return 0;
-	/* The fold never grows its output, so strlen+1 always fits. */
+	/* The fold never grows its output, so strlen+1 always fits. Short
+	 * queries fold into the stack buffer; long ones spill to the heap. */
 	qlen = strlen(query);
-	folded = malloc(qlen + 1);
-	if (!folded)
-		return 0;
+	if (qlen + 1 <= sizeof(fold_stack)) {
+		folded = fold_stack;
+	} else {
+		folded = malloc(qlen + 1);
+		if (!folded)
+			return 0;
+	}
 	if (stoma_fold(folded, qlen + 1, query) < 0) {
-		free(folded);
+		if (folded != fold_stack)
+			free(folded);
 		return 0;
 	}
 
 	toks.n = 0;
 	stoma_tokenize(folded, collect_token, &toks);
 	if (toks.n == 0) {
-		free(folded);
+		if (folded != fold_stack)
+			free(folded);
 		return 0;
 	}
 	if (handled)
 		*handled = 1;
 
 	fld = strlen(field);
+	/* One prefix buffer for every token: the longest token cannot exceed
+	 * the folded query, so a single sizing pass caps the allocation. */
+	for (i = 0; i < toks.n; i++)
+		if (toks.len[i] > pw)
+			pw = toks.len[i];
+	prefix = malloc(fld + pw + 2); /* field '\t' token NUL */
+	if (!prefix) {
+		if (folded != fold_stack)
+			free(folded);
+		return 0;
+	}
+	memcpy(prefix, field, fld);
+	prefix[fld] = '\t';
 
 	for (i = 0; i < toks.n; i++) {
 		unsigned nxt_hd;
 		size_t plen = fld + 1 + toks.len[i];
-		char *prefix = malloc(plen + 1);
 		uint32_t cur;
 		const void *k;
 		const void *v;
 
-		if (!prefix)
-			break;
-		memcpy(prefix, field, fld);
-		prefix[fld] = '\t';
 		memcpy(prefix + fld + 1, toks.toks[i], toks.len[i]);
 		prefix[plen] = '\0';
 
 		nxt_hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
-		if (!nxt_hd) {
-			free(prefix);
+		if (!nxt_hd)
 			break;
-		}
 
 		/* Prefix scan: index map is QM_SORTED, QM_RANGE iterates from
 		 * the lower bound to the end; break once the prefix no longer
@@ -523,7 +541,6 @@ static uint32_t stoma_query_any(
 				qmap_put(nxt_hd, sep2 + 1, "");
 		}
 		qmap_fin(cur);
-		free(prefix);
 
 		if (cur_hd)
 			qmap_close(cur_hd);
@@ -540,20 +557,23 @@ static uint32_t stoma_query_any(
 			int keep = 1;
 
 			if (phrase && toks.n > 1) {
-				size_t dfl = fld + 1 + strlen(rid);
-				char *dkey = malloc(dfl + 1);
+				size_t rl = strlen(rid);
+				size_t dfl = fld + 1 + rl;
 				const char *dtext;
 				dctoks_t d;
 
-				if (!dkey)
-					break;
+				if (dfl + 1 > dcap) {
+					char *nt = realloc(dkey, dfl + 1);
+					if (!nt)
+						break;
+					dkey = nt;
+					dcap = dfl + 1;
+				}
 				memcpy(dkey, field, fld);
 				dkey[fld] = '\t';
-				memcpy(dkey + fld + 1, rid, strlen(rid));
+				memcpy(dkey + fld + 1, rid, rl);
 				dkey[dfl] = '\0';
-				dtext = (const char *)qmap_get(
-				        db->doc_hd, dkey);
-				free(dkey);
+				dtext = (const char *)qmap_get(db->doc_hd, dkey);
 				memset(&d, 0, sizeof(d));
 				if (dtext) {
 					stoma_tokenize(
@@ -573,7 +593,10 @@ static uint32_t stoma_query_any(
 		qmap_close(cur_hd);
 	}
 
-	free(folded);
+	if (folded != fold_stack)
+		free(folded);
+	free(prefix);
+	free(dkey);
 
 	return matches;
 }
@@ -687,16 +710,20 @@ static int stoma_axis_rank(void *ctx, void *params, rec_ref_t ref, float *score)
  * Decode "field=body query='hello world' phrase=1 matched=2" into a
  * heap-owned rec_stoma_params. query/field default to "", phrase/
  * matched default to 0. Single-quoted values may contain spaces. The
- * decode-spec grammar is kernel-owned (ttypt/rec.h rec_spec_next); the
- * scan buffer is freed before returning (the kept field/query strings
- * are owned copies).
+ * decode-spec grammar is kernel-owned (ttypt/rec.h rec_spec_scan):
+ * values are parsed in place with bounded parsers, so decode allocates
+ * nothing until at most two owned string copies (field/query when the
+ * leaf provides a non-empty value). The kept strings are owned copies;
+ * CLI fallbacks are borrowed process-lifetime globals.
  */
 static void *stoma_axis_decode(const char *s)
 {
 	struct rec_stoma_params *p;
-	char *buf = NULL;
 	const char *q_leaf = NULL, *f_leaf = NULL;
+	size_t qlen = 0, flen = 0;
+	char *q_owned = NULL, *f_owned = NULL;
 	int has_query = 0, has_field = 0, has_phrase = 0, has_matched = 0;
+	int q_quoted = 0, f_quoted = 0;
 
 	p = calloc(1, sizeof(*p));
 	if (!p)
@@ -726,61 +753,51 @@ static void *stoma_axis_decode(const char *s)
 	if (!*s)
 		return p;
 
-	/* The decode-spec grammar is kernel-owned (ttypt/rec.h
-	 * rec_spec_next); the scan buffer is freed before returning (the kept
-	 * strings are taken as owned copies, ¶5 — the CLI fallbacks stay
-	 * borrowed process-lifetime globals). */
-	buf = strdup(s);
-	if (!buf) {
-		free(p);
-		return NULL;
-	}
-	for (char *cur = buf, *key, *val;
-	     rec_spec_next(&cur, &key, &val); ) {
-		if (!val)
-			continue;
-		if (!strcmp(key, "field")) {
-			f_leaf = val;
-			has_field = 1;
-		}
-		else if (!strcmp(key, "query")) {
-			q_leaf = val;
-			has_query = 1;
-		}
-		else if (!strcmp(key, "phrase")) {
-			p->phrase = atoi(val);
-			has_phrase = 1;
-		}
-		else if (!strcmp(key, "matched")) {
-			p->matched = (size_t)atol(val);
-			has_matched = 1;
+	{
+		const char *cur = s, *key, *val;
+		size_t klen, vlen;
+		int quoted;
+
+		while (rec_spec_scan(&cur, &key, &klen, &val, &vlen,
+				     &quoted)) {
+			if (rec_key_eq(key, klen, "field")) {
+				f_leaf = val;
+				flen = vlen;
+				f_quoted = quoted;
+				has_field = 1;
+			} else if (rec_key_eq(key, klen, "query")) {
+				q_leaf = val;
+				qlen = vlen;
+				q_quoted = quoted;
+				has_query = 1;
+			} else if (rec_key_eq(key, klen, "phrase")) {
+				if (rec_cli_int_b(val, val + vlen,
+						  &p->phrase) == 0)
+					has_phrase = 1;
+			} else if (rec_key_eq(key, klen, "matched")) {
+				if (rec_cli_size_b(val, val + vlen,
+						   &p->matched) == 0)
+					has_matched = 1;
+			}
 		}
 	}
 	/* D14 CLI merge (round 2): fill the fields the leaf omitted. Leaf
 	 * wins — even an empty leaf value (field= → the "text" default,
 	 * exactly as before). */
 	if (has_query) {
-		p->query = strdup(q_leaf);
-		if (!p->query) {
-			free(p);
-			free(buf);
-			return NULL;
-		}
+		if (rec_cli_str_dup(q_leaf, qlen, q_quoted,
+				    &q_owned) != 0)
+			goto fail;
+		p->query = q_owned;
 	} else if (stoma_cli_query) {
 		p->query = stoma_cli_query;
 	}
 	if (has_field) {
-		if (*f_leaf) {
-			char *fc = strdup(f_leaf);
-
-			if (!fc) {
-				if (has_query)
-					free((char *)p->query);
-				free(p);
-				free(buf);
-				return NULL;
-			}
-			p->field = fc;
+		if (flen > 0) {
+			if (rec_cli_str_dup(f_leaf, flen, f_quoted,
+					    &f_owned) != 0)
+				goto fail;
+			p->field = f_owned;
 		}                       /* empty leaf → keep "text" default */
 	} else if (stoma_cli_field_set) {
 		p->field = stoma_cli_field;
@@ -789,8 +806,13 @@ static void *stoma_axis_decode(const char *s)
 		p->phrase = stoma_cli_phrase;
 	if (!has_matched && stoma_cli_matched_set)
 		p->matched = stoma_cli_matched;
-	free(buf);
 	return p;
+
+fail:
+	free(q_owned);
+	free(f_owned);
+	free(p);
+	return NULL;
 }
 
 __attribute__((constructor)) static void stoma_rec_axis_init(void)

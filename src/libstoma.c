@@ -748,13 +748,22 @@ static void *stoma_axis_decode(const char *s)
 		}
 		*cur++ = '\0';
 		if (*cur == '\'') {
+			char *dst;
 			cur++;
-			val = cur;
-			while (*cur && *cur != '\'')
-				cur++;
-			vlen = (size_t)(cur - val);
-			if (*cur == '\'')
-				*cur++ = '\0';
+			val = dst = cur;
+			while (*cur) {
+				if (*cur == '\\' && cur[1]) {
+					cur++;
+					*dst++ = *cur++;
+				} else if (*cur == '\'') {
+					cur++;
+					break;
+				} else {
+					*dst++ = *cur++;
+				}
+			}
+			*dst = '\0';
+			vlen = (size_t)(dst - val);
 		} else {
 			val = cur;
 			while (*cur && *cur != ' ')

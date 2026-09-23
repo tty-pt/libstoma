@@ -5,10 +5,10 @@
  * one-record texts plus both <primary>.roster sidecars; a second temp dir
  * with a single primary (C.db).
  *
- *   B-1: QMAP_AXIS_PRIMARY set → rebuild binds THAT primary only (A's
+ *   B-1: CORM_AXIS_PRIMARY set → rebuild binds THAT primary only (A's
  *        text found, B's text absent, "rebuilt 1 docs" on stderr).
  *   B-2: env empty + two rosters → valid empty ctx, both texts absent,
- *        loud "N roster sidecars" warning naming QMAP_AXIS_PRIMARY.
+ *        loud "N roster sidecars" warning naming CORM_AXIS_PRIMARY.
  *   Scan fallback (no env, one roster) still rebuilds — never regresses.
  *   Env set but sidecar missing → warn + fall back to the scan.
  *
@@ -25,7 +25,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/stat.h>
-#include <ttypt/qmap.h>
+#include <ttypt/corm.h>
 #include <ttypt/rec.h>
 #include <ttypt/qsys.h>
 #include "stoma/stoma.h"
@@ -44,12 +44,12 @@ static int total = 0;
 
 static int hd_has(unsigned hd, const char *row)
 {
-	return qmap_get(hd, row) != NULL;
+	return corm_get(hd, row) != NULL;
 }
 
 static int text_finds(stoma_db_t *db, const char *tok, rec_ref_t ref)
 {
-	unsigned hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+	unsigned hd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 	int handled = 0;
 	char rid[24];
 	uint32_t n;
@@ -60,13 +60,13 @@ static int text_finds(stoma_db_t *db, const char *tok, rec_ref_t ref)
 	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)ref);
 	n = stoma_query(db, STOMA_AXIS_TEXT_FIELD, tok, hd, &handled);
 	found = handled == 1 && n >= 1 && hd_has(hd, rid);
-	qmap_close(hd);
+	corm_close(hd);
 	return found;
 }
 
 static int text_misses(stoma_db_t *db, const char *tok, rec_ref_t ref)
 {
-	unsigned hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+	unsigned hd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 	int handled = 0;
 	char rid[24];
 	int miss = 0;
@@ -76,7 +76,7 @@ static int text_misses(stoma_db_t *db, const char *tok, rec_ref_t ref)
 	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)ref);
 	(void)stoma_query(db, STOMA_AXIS_TEXT_FIELD, tok, hd, &handled);
 	miss = handled == 1 && !hd_has(hd, rid);
-	qmap_close(hd);
+	corm_close(hd);
 	return miss;
 }
 
@@ -143,10 +143,10 @@ static uint32_t seed_primary(const char *dir, const char *base,
 	uint32_t hd;
 
 	snprintf(path, sizeof(path), "%s/%s", dir, base);
-	hd = qmap_open(path, "hd", QM_HNDL, QM_STR, 4095,
-			QM_AINDEX | QM_MIRROR);
+	hd = corm_open(path, "hd", CM_HNDL, CM_STR, 4095,
+			CM_AINDEX | CM_MIRROR);
 	if (hd && text)
-		qmap_put(hd, &ref, text);
+		corm_put(hd, &ref, text);
 	snprintf(rsp, sizeof(rsp), "%s.roster", path);
 	f = fopen(rsp, "w");
 	if (f) {
@@ -170,7 +170,7 @@ int main(void)
 		return 1;
 	}
 	/* Deterministic mask (D11): the rebuild re-opens with this shape. */
-	(void)qsys_setenv("QMAP_MASK", "4095", 1);
+	(void)qsys_setenv("CORM_MASK", "4095", 1);
 
 	ha = seed_primary(d1, "A.db", 1, "chirpy alpha harbour");
 	hb = seed_primary(d1, "B.db", 1, "gamma beacon fjord");
@@ -179,7 +179,7 @@ int main(void)
 
 	/* ── B-1: env primary wins with two rosters present ── */
 	snprintf(prim, sizeof(prim), "%s/A.db", d1);
-	(void)qsys_setenv("QMAP_AXIS_PRIMARY", prim, 1);
+	(void)qsys_setenv("CORM_AXIS_PRIMARY", prim, 1);
 	snprintf(logf, sizeof(logf), "%s/cap.log", d1);
 	snprintf(spec, sizeof(spec), "%s/A.db-stoma", d1);
 	cap_begin(logf);
@@ -196,7 +196,7 @@ int main(void)
 		stoma_close(dbctx);
 
 	/* ── B-2: two rosters, no env → loud warn, valid empty index ── */
-	(void)qsys_setenv("QMAP_AXIS_PRIMARY", "", 1);
+	(void)qsys_setenv("CORM_AXIS_PRIMARY", "", 1);
 	cap_begin(logf);
 	dbctx = rec_axis_open(spec);
 	log = cap_end();
@@ -205,7 +205,7 @@ int main(void)
 	CHECK(dbctx && text_misses(dbctx, "gamma", 1), "b2-gamma-empty");
 	CHECK(log && strstr(log, "2 roster sidecars") != NULL,
 			"b2-count-warn");
-	CHECK(log && strstr(log, "QMAP_AXIS_PRIMARY") != NULL,
+	CHECK(log && strstr(log, "CORM_AXIS_PRIMARY") != NULL,
 			"b2-warn-names-env");
 	free(log);
 	if (dbctx)
@@ -227,7 +227,7 @@ int main(void)
 
 	/* ── env set but sidecar missing → warn + still fall back ── */
 	snprintf(prim, sizeof(prim), "%s/nope.db", d2);
-	(void)qsys_setenv("QMAP_AXIS_PRIMARY", prim, 1);
+	(void)qsys_setenv("CORM_AXIS_PRIMARY", prim, 1);
 	cap_begin(logf);
 	dbctx = rec_axis_open(spec);
 	log = cap_end();

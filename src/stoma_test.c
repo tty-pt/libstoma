@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <locale.h>
-#include <ttypt/qmap.h>
+#include <ttypt/corm.h>
 #include <ttypt/rec.h>
 #include "stoma/stoma.h"
 
@@ -21,7 +21,7 @@ static stoma_db_t *rdb;
 
 static int hd_has(unsigned hd, const char *row)
 {
-	return qmap_get(hd, row) != NULL;
+	return corm_get(hd, row) != NULL;
 }
 
 /* ---- recall-kernel helpers (groups 30-35) ---- */
@@ -54,15 +54,15 @@ static int rec_sorted_unique(const rec_set_t *fs)
 	return 1;
 }
 
-static int qmap_equals_set(unsigned hd, const rec_set_t *fs)
+static int corm_equals_set(unsigned hd, const rec_set_t *fs)
 {
-	uint32_t cur = qmap_iter(hd, NULL, 0);
+	uint32_t cur = corm_iter(hd, NULL, 0);
 	const void *k;
 	const void *v;
 	size_t qn = 0;
 	int ok = 1;
 
-	while (ok && qmap_next(&k, &v, cur)) {
+	while (ok && corm_next(&k, &v, cur)) {
 		const char *key = (const char *)k;
 		char *end;
 		unsigned long long rv;
@@ -76,7 +76,7 @@ static int qmap_equals_set(unsigned hd, const rec_set_t *fs)
 		if (ok)
 			qn++;
 	}
-	qmap_fin(cur);
+	corm_fin(cur);
 	return ok && qn == rec_set_count(fs);
 }
 
@@ -109,12 +109,12 @@ static void check_row_fill(unsigned out, const char *query, int hexp,
 	rec_set_t *fs;
 	char name[128];
 
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(rdb, "title", query, out, &handled);
 	fs = fill_once(rdb, "title", query, 0);
 	snprintf(name, sizeof(name), "fill==query '%s'", query);
 	CHECK(fs && handled == hexp && n == nex && rec_set_count(fs) == nex &&
-	              qmap_equals_set(out, fs) &&
+	              corm_equals_set(out, fs) &&
 	              rec_sorted_unique(fs),
 	      name);
 	if (fs) {
@@ -130,7 +130,7 @@ static void check_row_fill(unsigned out, const char *query, int hexp,
 int main(void)
 {
 	stoma_db_t *db = stoma_open(0);
-	unsigned out = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+	unsigned out = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 	int handled = 0;
 	uint32_t n;
 
@@ -155,59 +155,59 @@ int main(void)
 	n = stoma_query(db, "title", "night", out, &handled);
 	CHECK(handled == 1 && n == 2, "exact token");
 	CHECK(hd_has(out, "r1") && hd_has(out, "r4"), "exact rows");
-	qmap_drop(out);
+	corm_drop(out);
 
 	n = stoma_query(db, "title", "st", out, &handled);
 	CHECK(handled == 1 && n == 3, "prefix st");
 	CHECK(hd_has(out, "r1") && hd_has(out, "r2") && hd_has(out, "r3"),
 	      "prefix rows");
 	CHECK(!hd_has(out, "r4"), "prefix excludes non-match");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 4. multi-token AND (order-insensitive) */
 	stoma_index(db, "title", "r5", "Black Star");
 	n = stoma_query(db, "title", "black star", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r5"), "AND two tokens");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "star black", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r5"), "AND order-insensitive");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 5. digits-only token */
 	stoma_index(db, "title", "r6", "1984");
 	n = stoma_query(db, "title", "1984", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r6"), "digits token");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "19", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r6"), "digit prefix");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 6. zero-token query → no-op */
 	n = stoma_query(db, "title", "---", out, &handled);
 	CHECK(handled == 0 && n == 0, "zero-token no-op");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 7. per-field isolation */
 	stoma_index(db, "author", "r1", "Stardust");
 	n = stoma_query(db, "title", "stardust", out, &handled);
 	CHECK(handled == 1 && n == 0, "field isolation");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 8. token dedup: repeated word matches once */
 	stoma_index(db, "title", "r7", "la la la");
 	n = stoma_query(db, "title", "la", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r7"), "dedup");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 9. clear + re-index */
 	stoma_clear(db);
 	n = stoma_query(db, "title", "night", out, &handled);
 	CHECK(handled == 1 && n == 0, "clear removes entries");
-	qmap_drop(out);
+	corm_drop(out);
 	stoma_index(db, "title", "r9", "new world");
 	n = stoma_query(db, "title", "new", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r9"), "re-index after clear");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 10. in-place put on same (field,row): re-indexing a changed value
 	 * leaves stale tokens (documented) — full rebuild via clear() is the
@@ -215,7 +215,7 @@ int main(void)
 	stoma_index(db, "title", "r9", "another world");
 	n = stoma_query(db, "title", "new", out, &handled);
 	CHECK(n == 1, "stale token remains (documented)");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 11. fold: lowercase, accents preserved (accent-sensitive) */
 	{
@@ -272,7 +272,7 @@ int main(void)
 		stoma_index(db, "title", "r13", "駅東京");
 		n = stoma_query(db, "title", "駅", out, &handled);
 		CHECK(handled == 1 && n == 1, "cjk searchable");
-		qmap_drop(out);
+		corm_drop(out);
 	}
 
 	/* 14. NULL/empty argument contracts */
@@ -300,18 +300,18 @@ int main(void)
 	stoma_index(db, "title", "r16", "... !!! ---");
 	n = stoma_query(db, "title", "anything", out, &handled);
 	CHECK(handled == 1 && n == 0, "empty/punct values never match");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 16. out_hd is appended to, NOT cleared (caller contract) */
 	stoma_index(db, "title", "r17", "alpha beta");
 	stoma_index(db, "title", "r18", "gamma delta");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "alpha", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r17"), "query alpha");
 	n = stoma_query(db, "title", "gamma", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r17") && hd_has(out, "r18"),
 	      "query appends (union)");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "gamma", out, &handled);
 	CHECK(n == 1 && !hd_has(out, "r17") && hd_has(out, "r18"),
 	      "drop between queries isolates");
@@ -331,7 +331,7 @@ int main(void)
 			        i);
 		snprintf(big1 + off, sizeof(big1) - (size_t)off, "needle");
 		stoma_index(db, "title", "r19", big1);
-		qmap_drop(out);
+		corm_drop(out);
 		off = 0;
 		for (i = 0; i < 64; i++)
 			off += snprintf(
@@ -340,10 +340,10 @@ int main(void)
 		snprintf(big2 + off, sizeof(big2) - (size_t)off, "needle");
 		n = stoma_query(db, "title", big2, out, &handled);
 		CHECK(handled == 1 && n == 0, "token 65+ ignored in query");
-		qmap_drop(out);
+		corm_drop(out);
 		n = stoma_query(db, "title", "t0 t1 t2", out, &handled);
 		CHECK(n == 1 && hd_has(out, "r19"), "first tokens still match");
-		qmap_drop(out);
+		corm_drop(out);
 	}
 
 	/* 17b. value larger than the old 8KB fold buffer (regression) */
@@ -358,25 +358,25 @@ int main(void)
 		snprintf(big + off, 9000 - (size_t)off, " quarantinemon");
 		stoma_index(db, "title", "r19b", big);
 		free(big);
-		qmap_drop(out);
+		corm_drop(out);
 		n = stoma_query(db, "title", "quarantinemon", out, &handled);
 		CHECK(handled == 1 && n == 1 && hd_has(out, "r19b"),
 		      "token past 8KB matches");
-		qmap_drop(out);
+		corm_drop(out);
 		n = stoma_query(db, "title", "aaaa", out, &handled);
 		CHECK(n == 1 && hd_has(out, "r19b"),
 		      "early tokens still match");
-		qmap_drop(out);
+		corm_drop(out);
 	}
 
 	/* 18. query normalization: punctuation and extra spaces */
 	stoma_index(db, "title", "r20", "Black Star");
 	n = stoma_query(db, "title", "black,  star", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r20"), "punct+spaces AND");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "  BLACK   STAR ", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r20"), "case+spaces AND");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 19. same token in two fields of one row stays field-isolated */
 	stoma_index(db, "title", "r21", "love");
@@ -384,32 +384,32 @@ int main(void)
 	stoma_index(db, "author", "r22", "uniquebyname");
 	n = stoma_query(db, "title", "love", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r21"), "title love");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "author", "love", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r21"), "author love");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "uniquebyname", out, &handled);
 	CHECK(n == 0, "no cross-field leak");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 20. alphanumeric tokens, prefix at token start only */
 	stoma_index(db, "title", "r23", "song2 live");
 	n = stoma_query(db, "title", "so", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r23"), "alpha prefix");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "song2", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r23"), "exact alnum token");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "2l", out, &handled);
 	CHECK(n == 0, "mid-token not matched");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 21. single-char query token */
 	n = stoma_query(db, "title", "s", out, &handled);
 	CHECK(handled == 1 && n == 2 && hd_has(out, "r20") &&
 	              hd_has(out, "r23"),
 	      "single-char token");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 22. phrase queries (stoma_query_phrase). Indexed tokens must avoid
 	 * 's' initials — test 21 pins the 's' prefix count to r20+r23. */
@@ -417,71 +417,71 @@ int main(void)
 	n = stoma_query_phrase(db, "title", "blue dawn", out, &handled);
 	CHECK(handled == 1 && n == 1 && hd_has(out, "r24"),
 	      "phrase adjacent in order");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query_phrase(db, "title", "dawn blue", out, &handled);
 	CHECK(n == 0, "phrase rejects reorder");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "dawn blue", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r24"), "AND stays order-insensitive");
-	qmap_drop(out);
+	corm_drop(out);
 
 	stoma_index(db, "title", "r25", "Blue summer of the dawn");
 	n = stoma_query_phrase(db, "title", "blue dawn", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r24") && !hd_has(out, "r25"),
 	      "phrase rejects spread tokens");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query(db, "title", "blue dawn", out, &handled);
 	CHECK(n == 2 && hd_has(out, "r24") && hd_has(out, "r25"),
 	      "AND still matches spread tokens");
-	qmap_drop(out);
+	corm_drop(out);
 
 	stoma_index(db, "title", "r26", "blackstar manor");
 	n = stoma_query_phrase(db, "title", "black manor", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r26"), "phrase allows per-token prefix");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query_phrase(db, "title", "star manor", out, &handled);
 	CHECK(n == 0, "phrase prefix must align at positions");
-	qmap_drop(out);
+	corm_drop(out);
 
 	stoma_index(db, "title", "r27", "line one\nline two");
 	n = stoma_query_phrase(db, "title", "one line", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r27"),
 	      "phrase spans line break (token separator)");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query_phrase(db, "title", "two line", out, &handled);
 	CHECK(n == 0, "phrase order matters across lines");
-	qmap_drop(out);
+	corm_drop(out);
 
 	stoma_index(db, "title", "r28", "Atenção Coração");
 	n = stoma_query_phrase(db, "title", "atenção coração", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r28"), "phrase with accents matches");
-	qmap_drop(out);
+	corm_drop(out);
 	n = stoma_query_phrase(db, "title", "coracao atencao", out, &handled);
 	CHECK(n == 0, "phrase accent-sensitive");
-	qmap_drop(out);
+	corm_drop(out);
 
 	stoma_index(db, "title", "r29", "Morning Dawn");
 	n = stoma_query_phrase(db, "title", "morning dawn", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r29"), "phrase case-insensitive");
-	qmap_drop(out);
+	corm_drop(out);
 
 	n = stoma_query_phrase(db, "title", "dawn", out, &handled);
 	CHECK(handled == 1 && n == 3 && hd_has(out, "r24") &&
 	              hd_has(out, "r25") && hd_has(out, "r29"),
 	      "single-token phrase equals AND");
-	qmap_drop(out);
+	corm_drop(out);
 
 	n = stoma_query_phrase(db, "title", "blue,  dawn", out, &handled);
 	CHECK(n == 1 && hd_has(out, "r24"), "phrase normalizes punct+spaces");
-	qmap_drop(out);
+	corm_drop(out);
 
 	n = stoma_query_phrase(db, "title", "---", out, &handled);
 	CHECK(handled == 0 && n == 0, "zero-token phrase no-op");
-	qmap_drop(out);
+	corm_drop(out);
 
 	n = stoma_query_phrase(db, "title", "nowhere at all", out, &handled);
 	CHECK(handled == 1 && n == 0, "phrase no match -> 0");
-	qmap_drop(out);
+	corm_drop(out);
 
 	/* 30-35. recall-kernel adapter (rec_axis_fill_tokens / stoma_rank) on a
 	 * dedicated decimal-id db so the raw r1-r29 universe is untouched. */
@@ -566,7 +566,7 @@ int main(void)
 					size_t ne = p ? rows[i].n1
 					              : rows[i].n0;
 
-					qmap_drop(out);
+					corm_drop(out);
 					if (p)
 						nn = stoma_query_phrase(
 						        rdb, "title", rows[i].q,
@@ -582,7 +582,7 @@ int main(void)
 					         rows[i].q);
 					CHECK(fs && handled == 1 && nn == ne &&
 					              rec_set_count(fs) == ne &&
-					              qmap_equals_set(out, fs) &&
+					              corm_equals_set(out, fs) &&
 					              rec_sorted_unique(fs),
 					      name);
 					if (fs) {
@@ -1152,8 +1152,8 @@ int main(void)
 					rec_set_free(fs);
 			}
 			{
-				unsigned hd = qmap_open(NULL, NULL, QM_STR,
-				                        QM_STR, 0xFF, 0);
+				unsigned hd = corm_open(NULL, NULL, CM_STR,
+				                        CM_STR, 0xFF, 0);
 				int qhandled = 0;
 				uint32_t n = stoma_query(rdb, "title", "outer",
 				                         hd, &qhandled);
@@ -1161,7 +1161,7 @@ int main(void)
 				CHECK(n == 1 && qhandled == 1 &&
 				              hd_has(hd, "5000000000"),
 				      "raw stoma_query still serves >UINT32_MAX row_id (string path)");
-				qmap_close(hd);
+				corm_close(hd);
 			}
 		}
 		stoma_close(rdb);
@@ -1176,7 +1176,7 @@ int main(void)
 	 * universe above is closed at this point; rdb is reused as the
 	 * fixture handle and cleared at the end). */
 	{
-		unsigned uhd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF,
+		unsigned uhd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF,
 		                         0);
 		int qh = 0;
 		uint32_t n;
@@ -1214,31 +1214,31 @@ int main(void)
 		 * doc's own tokens, so querying every original token and
 		 * finding no trace of the row proves zero residual
 		 * postings. Shared tokens must still reach the other row. */
-		qmap_drop(uhd);
+		corm_drop(uhd);
 		n = stoma_query(rdb, "u", "harbor", uhd, &qh);
 		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u1") &&
 		              !hd_has(uhd, "u2"),
 		      "unindex: shared token keeps u1, drops u2");
-		qmap_drop(uhd);
+		corm_drop(uhd);
 		n = stoma_query(rdb, "u", "beacons", uhd, &qh);
 		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u1") &&
 		              !hd_has(uhd, "u2"),
 		      "unindex: shared token beacons keeps u1, drops u2");
-		qmap_drop(uhd);
+		corm_drop(uhd);
 		n = stoma_query(rdb, "u", "charts", uhd, &qh);
 		CHECK(qh == 1 && n == 0, "unindex: u2-only token gone");
-		qmap_drop(uhd);
+		corm_drop(uhd);
 		n = stoma_query(rdb, "u", "harbor beacons", uhd, &qh);
 		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u1") &&
 		              !hd_has(uhd, "u2"),
 		      "unindex: AND query keeps u1, drops u2");
-		qmap_drop(uhd);
+		corm_drop(uhd);
 
 		/* untouched row and other field survive */
 		n = stoma_query(rdb, "u", "distant star", uhd, &qh);
 		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u3"),
 		      "unindex leaves u3 alone");
-		qmap_drop(uhd);
+		corm_drop(uhd);
 		n = stoma_query(rdb, "v", "charts", uhd, &qh);
 		CHECK(qh == 1 && n == 1 && hd_has(uhd, "u2"),
 		      "unindex is per-field (v/u2 survives)");
@@ -1289,12 +1289,12 @@ int main(void)
 		CHECK(stoma_unindex_ref(rdb, NULL, 1) == -1,
 		      "unindex_ref null field");
 
-		qmap_close(uhd);
+		corm_close(uhd);
 		stoma_close(rdb);
 		rdb = NULL;
 	}
 	stoma_close(db);
-	qmap_close(out);
+	corm_close(out);
 
 	printf("Results: %d/%d passed", total - failures, total);
 	if (failures > 0)

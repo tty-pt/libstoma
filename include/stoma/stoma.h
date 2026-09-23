@@ -6,7 +6,7 @@
 #include <ttypt/rec.h>
 
 /*
- * stoma — qmap-backed full-text index.
+ * stoma — corm-backed full-text index.
  *
  * A generic inverted index over (field, token) → row_id. It knows nothing
  * about rows, schemas, or the application: callers choose which fields to
@@ -28,21 +28,21 @@ int stoma_fold(char *out, size_t outsz, const char *in);
 
 typedef struct stoma_db stoma_db_t;
 
-/* Open an index. mask is the qmap hash mask (0 = qmap default). */
+/* Open an index. mask is the corm hash mask (0 = corm default). */
 stoma_db_t *stoma_open(unsigned mask);
 
 /*
  * rec_axis_open (RECALL-KERNEL.md "rec_axis_open convention", optional CLI-open convention,
- * not part of libqmap's core rec_query registry API): opens a stoma
+ * not part of libcorm's core rec_query registry API): opens a stoma
  * index from an opaque spec string and returns the ctx a caller then
  * passes to rec_axis_set_ctx() -- the stoma_db_t* directly.
  *
  * Two spec shapes (2B-2):
- *  - decimal mask (or empty/NULL): the stoma_open() mask, 0 = qmap
+ *  - decimal mask (or empty/NULL): the stoma_open() mask, 0 = corm
  *    default — a plain in-memory index, nothing seeded.
  *  - a path (contains '/'): the 2B-2 primary-seeded rebuild. The
  *    directory is scanned for a `<primary>.roster` sidecar (written by
- *    the qmap CLI's roster persistence); the primary qmap store it
+ *    the corm CLI's roster persistence); the primary corm store it
  *    prefixes is opened (`:a:s` raw and `:a:u` decimal alike) and every
  *    record is re-indexed under the canonical `text` field. A rebuild
  *    emits a one-line budget note (docs + ms) on stderr so callers can
@@ -114,7 +114,7 @@ int stoma_unindex_ref(stoma_db_t *db,
 /*
  * rec_axis_store / rec_axis_unstore / rec_axis_readback (Phase 2A store
  * contract, RECALL-KERNEL.md "rec_axis_store convention", optional
- * CLI-specific — not libqmap core API). The consumer passes (ref, value)
+ * CLI-specific — not libcorm core API). The consumer passes (ref, value)
  * blindly; stoma stores the WHOLE value string's text under
  * STOMA_AXIS_TEXT_FIELD (replace-in-place: store erases any previous
  * entry for the ref first, so a ref owns exactly one doc).
@@ -134,7 +134,7 @@ int rec_axis_readback(void *ctx, rec_ref_t ref, char **blob_out,
 /*
  * Query: every token of `query` must prefix-match in `field`.
  * Matching row_ids are stored as "row_id" → "" into out_hd (a caller-opened
- * qmap; duplicates collapse). *handled is set to 1 when the query produced
+ * corm; duplicates collapse). *handled is set to 1 when the query produced
  * at least one token, 0 for an empty/zero-token query (no-op — caller should
  * treat it as "matches everything"). Returns the number of matches written.
  */

@@ -1,15 +1,15 @@
 FOLDER := stoma
 all := libstoma stoma_test stoma_prop_test stoma_axis_store_test stoma_axis_roundtrip_test stoma_axis_rebuild_test
 
-LDLIBS-libstoma := -lqmap
+LDLIBS-libstoma := -lcorm
 libstoma-obj-y := src/token.o
-LDLIBS-stoma_test := -lstoma -lqmap
-LDLIBS-stoma_prop_test := -lstoma -lqmap
-LDLIBS-stoma_axis_store_test := -lstoma -lqmap
-LDLIBS-stoma_axis_roundtrip_test := -lstoma -lqmap
-LDLIBS-stoma_axis_rebuild_test := -lstoma -lqmap -lqsys
+LDLIBS-stoma_test := -lstoma -lcorm
+LDLIBS-stoma_prop_test := -lstoma -lcorm
+LDLIBS-stoma_axis_store_test := -lstoma -lcorm
+LDLIBS-stoma_axis_roundtrip_test := -lstoma -lcorm
+LDLIBS-stoma_axis_rebuild_test := -lstoma -lcorm -lqsys
 
-CFLAGS += -I/home/quirinpa/site/external/libqmap/include
+CFLAGS += -I/home/quirinpa/site/external/libcorm/include
 
 include ../mk/include.mk
 

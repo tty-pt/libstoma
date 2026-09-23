@@ -11,8 +11,8 @@ jobs:
     with:
       name: libstoma
       publish_to: "deb,apk,rpm,brew,openbsd,winget"
-      deps: "libqmap"
-      deps_winget_tty: "libqsys,libqmap"
+      deps: "libcorm"
+      deps_winget_tty: "libqsys,libcorm"
     secrets:
       HOST: ${{ secrets.OPENBSD_HOST }}
       USER: ${{ secrets.OPENBSD_USER }}

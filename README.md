@@ -1,6 +1,6 @@
 # stoma — Search Tokenization and Accent-Sensitive Inverted Index
 
-Fast in-memory inverted index and string tokenization library backed by `libqmap`.
+Fast in-memory inverted index and string tokenization library backed by `libcorm`.
 
 ## Overview
 
@@ -47,7 +47,7 @@ int stoma_unindex(stoma_db_t *db, const char *field, const char *row_id);
 int stoma_unindex_ref(stoma_db_t *db, const char *field, rec_ref_t row_id);
 
 /* Phase 2A store/unstore/readback adapters (RECALL-KERNEL.md, optional
-   CLI-specific -- not libqmap core API). The consumer passes (ref, value)
+   CLI-specific -- not libcorm core API). The consumer passes (ref, value)
    blindly; stoma stores the WHOLE value string's text under the canonical
    "text" field (replace-in-place: a ref owns exactly one doc). store: 0 ok,
    -1 errno EINVAL on bad args/empty value. unstore: removes the ref's entry,
@@ -79,8 +79,8 @@ int stoma_list_append(char *out, size_t out_sz, const char *token);
 
 ## Recall-kernel form
 
-stoma is the lexical axis of the recall kernel (`rec.h` in libqmap; spec in
-libqmap's `docs/RECALL-KERNEL.md`). Implemented adapter following the
+stoma is the lexical axis of the recall kernel (`rec.h` in libcorm; spec in
+libcorm's `docs/RECALL-KERNEL.md`). Implemented adapter following the
 contract (one filler, streams matches, seals, plain `int` return, additive):
 
 ```c
@@ -95,7 +95,7 @@ int rec_axis_fill_tokens(stoma_db_t *db, const char *field,
 /* FTS score ranker for the kernel loop: score = matched / token_count of the
    folded field text of decimal(ref). Shorter docs rank higher on ties.
    Composes as tokens(db, t) ∩ geo(b) ∩ time(r) → top-k via `rec_query_run`
-   (libqmap docs/RECALL-KERNEL.md, "Running a query"). */
+   (libcorm docs/RECALL-KERNEL.md, "Running a query"). */
 struct stoma_rank_ctx {
 	stoma_db_t *db;
 	const char *field;
@@ -110,4 +110,4 @@ adapter is optional and additive.
 
 ## Dependencies
 
-- `external/libqmap` — Hash map storage
+- `external/libcorm` — Hash map storage

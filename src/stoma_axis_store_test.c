@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <ttypt/qmap.h>
+#include <ttypt/corm.h>
 #include <ttypt/rec.h>
 #include "stoma/stoma.h"
 
@@ -30,12 +30,12 @@ static int total = 0;
 
 static int hd_has(unsigned hd, const char *row)
 {
-	return qmap_get(hd, row) != NULL;
+	return corm_get(hd, row) != NULL;
 }
 
 static int text_finds(stoma_db_t *db, const char *tok, rec_ref_t ref)
 {
-	unsigned hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+	unsigned hd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 	int handled = 0;
 	char rid[24];
 	uint32_t n;
@@ -46,13 +46,13 @@ static int text_finds(stoma_db_t *db, const char *tok, rec_ref_t ref)
 	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)ref);
 	n = stoma_query(db, STOMA_AXIS_TEXT_FIELD, tok, hd, &handled);
 	found = handled == 1 && n >= 1 && hd_has(hd, rid);
-	qmap_close(hd);
+	corm_close(hd);
 	return found;
 }
 
 static int text_misses(stoma_db_t *db, const char *tok, rec_ref_t ref)
 {
-	unsigned hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+	unsigned hd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 	int handled = 0;
 	char rid[24];
 	int miss = 0;
@@ -62,7 +62,7 @@ static int text_misses(stoma_db_t *db, const char *tok, rec_ref_t ref)
 	snprintf(rid, sizeof(rid), "%llu", (unsigned long long)ref);
 	(void)stoma_query(db, STOMA_AXIS_TEXT_FIELD, tok, hd, &handled);
 	miss = handled == 1 && !hd_has(hd, rid);
-	qmap_close(hd);
+	corm_close(hd);
 	return miss;
 }
 
@@ -84,14 +84,14 @@ int main(void)
 	CHECK(text_finds(db, "harbor", 7), "store: exact token finds ref");
 	CHECK(text_finds(db, "bea", 7), "store: prefix finds ref");
 	{
-		unsigned hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF,
+		unsigned hd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF,
 		                        0);
 		int handled = 0;
 		uint32_t m = stoma_query(db, "title", "beacon", hd,
 		                         &handled);
 
 		CHECK(handled == 1 && m == 0, "store lands under text only");
-		qmap_close(hd);
+		corm_close(hd);
 	}
 
 	/* 2. readback is the stored (folded) text; n_out counts chars. */

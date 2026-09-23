@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <locale.h>
-#include <ttypt/qmap.h>
+#include <ttypt/corm.h>
 #include <ttypt/rec.h>
 #include "stoma/stoma.h"
 
@@ -402,7 +402,7 @@ static int run_seed(unsigned long seed)
 		gen_query(query, sizeof(query));
 		fold_tokens(query, &qt);
 
-		out_hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+		out_hd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 		n = stoma_query(db, field_names[fi], query, out_hd, &handled);
 
 		if ((qt.n > 0) != (handled > 0)) {
@@ -410,7 +410,7 @@ static int run_seed(unsigned long seed)
 			       "(stoma=%d ref=%d) query='%s'\n",
 			       seed, q, handled, qt.n > 0, query);
 			failures++;
-			qmap_close(out_hd);
+			corm_close(out_hd);
 			continue;
 		}
 		for (r = 0; r < MAX_ROWS; r++) {
@@ -419,7 +419,7 @@ static int run_seed(unsigned long seed)
 			int got;
 
 			snprintf(rid, sizeof(rid), "%d", r);
-			got = qmap_get(out_hd, rid) != NULL;
+			got = corm_get(out_hd, rid) != NULL;
 			exp_total += exp;
 			if (got != exp) {
 				if (failures < 5)
@@ -437,7 +437,7 @@ static int run_seed(unsigned long seed)
 			       seed, q, (unsigned)n, exp_total, query);
 			failures++;
 		}
-		qmap_close(out_hd);
+		corm_close(out_hd);
 		failures += check_fill(
 		        seed, q, query, fi, &qt, 0, ref_matches);
 
@@ -445,7 +445,7 @@ static int run_seed(unsigned long seed)
 		 * compared against the contiguous-subsequence reference. */
 		{
 			unsigned out_hd2 =
-			        qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+			        corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 			uint32_t n2 = 0;
 			int handled2 = 0;
 			int exp_total2 = 0;
@@ -458,7 +458,7 @@ static int run_seed(unsigned long seed)
 				       "(stoma=%d ref=%d) query='%s'\n",
 				       seed, q, handled2, qt.n > 0, query);
 				failures++;
-				qmap_close(out_hd2);
+				corm_close(out_hd2);
 				continue;
 			}
 			for (r2 = 0; r2 < MAX_ROWS; r2++) {
@@ -468,7 +468,7 @@ static int run_seed(unsigned long seed)
 				int got2;
 
 				snprintf(rid2, sizeof(rid2), "%d", r2);
-				got2 = qmap_get(out_hd2, rid2) != NULL;
+				got2 = corm_get(out_hd2, rid2) != NULL;
 				exp_total2 += exp2;
 				if (got2 != exp2) {
 					if (failures < 5)
@@ -490,7 +490,7 @@ static int run_seed(unsigned long seed)
 				       query);
 				failures++;
 			}
-			qmap_close(out_hd2);
+			corm_close(out_hd2);
 			failures += check_fill(seed, q, query, fi, &qt, 1,
 			                      ref_phrase_matches);
 		}

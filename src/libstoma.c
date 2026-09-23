@@ -6,7 +6,7 @@
 #include <libgen.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <ttypt/qmap.h>
+#include <ttypt/corm.h>
 #include "stoma/stoma.h"
 
 #define STOMA_MAX_TOKENS 64
@@ -17,8 +17,8 @@ void stoma_tokenize(
         void *user);
 
 struct stoma_db {
-	unsigned hd;     /* QM_SORTED, QM_STR → QM_STR inverted index */
-	unsigned doc_hd; /* QM_SORTED, QM_STR → QM_STR folded text per
+	unsigned hd;     /* CM_SORTED, CM_STR → CM_STR inverted index */
+	unsigned doc_hd; /* CM_SORTED, CM_STR → CM_STR folded text per
 	                    (field,row) */
 };
 
@@ -39,14 +39,14 @@ stoma_db_t *stoma_open(unsigned mask)
 	db = calloc(1, sizeof(*db));
 	if (!db)
 		return NULL;
-	db->hd = qmap_open(NULL, NULL, QM_STR, QM_STR, mask, QM_SORTED);
+	db->hd = corm_open(NULL, NULL, CM_STR, CM_STR, mask, CM_SORTED);
 	if (!db->hd) {
 		free(db);
 		return NULL;
 	}
-	db->doc_hd = qmap_open(NULL, NULL, QM_STR, QM_STR, mask, QM_SORTED);
+	db->doc_hd = corm_open(NULL, NULL, CM_STR, CM_STR, mask, CM_SORTED);
 	if (!db->doc_hd) {
-		qmap_close(db->hd);
+		corm_close(db->hd);
 		free(db);
 		return NULL;
 	}
@@ -57,8 +57,8 @@ void stoma_close(stoma_db_t *db)
 {
 	if (!db)
 		return;
-	qmap_close(db->hd);
-	qmap_close(db->doc_hd);
+	corm_close(db->hd);
+	corm_close(db->doc_hd);
 	free(db);
 }
 
@@ -66,8 +66,8 @@ void stoma_clear(stoma_db_t *db)
 {
 	if (!db)
 		return;
-	qmap_drop(db->hd);
-	qmap_drop(db->doc_hd);
+	corm_drop(db->hd);
+	corm_drop(db->doc_hd);
 }
 
 /* ---- index ---- */
@@ -94,7 +94,7 @@ static void index_token(const char *tok, size_t len, void *user)
 	key[fld + 1 + len] = '\t';
 	memcpy(key + fld + 2 + len, ctx->row_id, rid);
 	key[fld + 2 + len + rid] = '\0';
-	qmap_put(ctx->hd, key, "");
+	corm_put(ctx->hd, key, "");
 	free(key);
 }
 
@@ -138,7 +138,7 @@ int stoma_index(
 			memcpy(dkey + fld + 1, row_id, rid);
 			dkey[dlen] = '\0';
 			memcpy(fdoc, folded, fl + 1);
-			qmap_put(db->doc_hd, dkey, fdoc);
+			corm_put(db->doc_hd, dkey, fdoc);
 		}
 		free(dkey);
 		free(fdoc);
@@ -213,7 +213,7 @@ int stoma_unindex(stoma_db_t *db, const char *field, const char *row_id)
 	dkey[fld] = '\t';
 	memcpy(dkey + fld + 1, row_id, rid);
 	dkey[dlen] = '\0';
-	dtext = (const char *)qmap_get(db->doc_hd, dkey);
+	dtext = (const char *)corm_get(db->doc_hd, dkey);
 	if (!dtext) {
 		free(dkey);
 		return 0; /* absent (field,row): idempotent no-op */
@@ -236,11 +236,11 @@ int stoma_unindex(stoma_db_t *db, const char *field, const char *row_id)
 		key[fld + 1 + tlen] = '\t';
 		memcpy(key + fld + 2 + tlen, row_id, rid);
 		key[klen] = '\0';
-		qmap_del(db->hd, key);
+		corm_del(db->hd, key);
 		free(key);
 	}
 	free(toks.ent);
-	qmap_del(db->doc_hd, dkey);
+	corm_del(db->doc_hd, dkey);
 	free(dkey);
 	return 0;
 }
@@ -319,7 +319,7 @@ int rec_axis_readback(void *ctx, rec_ref_t ref, char **blob_out,
 	dkey[fld] = '\t';
 	memcpy(dkey + fld + 1, rid, rlen);
 	dkey[fld + 1 + rlen] = '\0';
-	dtext = (const char *)qmap_get(db->doc_hd, dkey);
+	dtext = (const char *)corm_get(db->doc_hd, dkey);
 	free(dkey);
 	if (!dtext)
 		return 0; /* absent → NULL/0, still 0 */
@@ -417,7 +417,7 @@ typedef struct {
 static void stoma_dest_emit(stoma_dest_t *d, const char *row_id)
 {
 	if (d->hd) {
-		qmap_put(d->hd, row_id, "");
+		corm_put(d->hd, row_id, "");
 		return;
 	}
 	if (d->set) {
@@ -516,15 +516,15 @@ static uint32_t stoma_query_any(
 		memcpy(prefix + fld + 1, toks.toks[i], toks.len[i]);
 		prefix[plen] = '\0';
 
-		nxt_hd = qmap_open(NULL, NULL, QM_STR, QM_STR, 0xFF, 0);
+		nxt_hd = corm_open(NULL, NULL, CM_STR, CM_STR, 0xFF, 0);
 		if (!nxt_hd)
 			break;
 
-		/* Prefix scan: index map is QM_SORTED, QM_RANGE iterates from
+		/* Prefix scan: index map is CM_SORTED, CM_RANGE iterates from
 		 * the lower bound to the end; break once the prefix no longer
 		 * matches (contiguous keys). */
-		cur = qmap_iter(db->hd, prefix, QM_RANGE);
-		while (qmap_next(&k, &v, cur)) {
+		cur = corm_iter(db->hd, prefix, CM_RANGE);
+		while (corm_next(&k, &v, cur)) {
 			const char *key = (const char *)k;
 			const char *sep1;
 			const char *sep2;
@@ -537,22 +537,22 @@ static uint32_t stoma_query_any(
 			sep2 = strchr(sep1 + 1, '\t');
 			if (!sep2)
 				continue;
-			if (!cur_hd || qmap_get(cur_hd, sep2 + 1))
-				qmap_put(nxt_hd, sep2 + 1, "");
+			if (!cur_hd || corm_get(cur_hd, sep2 + 1))
+				corm_put(nxt_hd, sep2 + 1, "");
 		}
-		qmap_fin(cur);
+		corm_fin(cur);
 
 		if (cur_hd)
-			qmap_close(cur_hd);
+			corm_close(cur_hd);
 		cur_hd = nxt_hd;
 	}
 
 	if (cur_hd) {
-		uint32_t cur = qmap_iter(cur_hd, NULL, 0);
+		uint32_t cur = corm_iter(cur_hd, NULL, 0);
 		const void *k;
 		const void *v;
 
-		while (qmap_next(&k, &v, cur)) {
+		while (corm_next(&k, &v, cur)) {
 			const char *rid = (const char *)k;
 			int keep = 1;
 
@@ -573,7 +573,7 @@ static uint32_t stoma_query_any(
 				dkey[fld] = '\t';
 				memcpy(dkey + fld + 1, rid, rl);
 				dkey[dfl] = '\0';
-				dtext = (const char *)qmap_get(db->doc_hd, dkey);
+				dtext = (const char *)corm_get(db->doc_hd, dkey);
 				memset(&d, 0, sizeof(d));
 				if (dtext) {
 					stoma_tokenize(
@@ -589,8 +589,8 @@ static uint32_t stoma_query_any(
 				matches++;
 			}
 		}
-		qmap_fin(cur);
-		qmap_close(cur_hd);
+		corm_fin(cur);
+		corm_close(cur_hd);
 	}
 
 	if (folded != fold_stack)
@@ -659,7 +659,7 @@ int stoma_rank(struct stoma_rank_ctx *ctx, rec_ref_t ref, float *score)
 	dkey[fld] = '\t';
 	memcpy(dkey + fld + 1, rid, rlen);
 	dkey[fld + 1 + rlen] = '\0';
-	dtext = (const char *)qmap_get(ctx->db->doc_hd, dkey);
+	dtext = (const char *)corm_get(ctx->db->doc_hd, dkey);
 	free(dkey);
 	if (!dtext)
 		return -1;
@@ -826,16 +826,16 @@ __attribute__((constructor)) static void stoma_rec_axis_init(void)
 
 /*
  * rec_axis_open convention (RECALL-KERNEL.md "rec_axis_open convention", optional CLI-open
- * convention, not part of libqmap's core rec_query registry API): spec
- * is the decimal qmap hash mask for stoma_open() (empty/NULL -> 0, the
- * qmap default) — or, when it names a path (contains a '/'), a
- * 2B-2 primary-seeded rebuild: stoma finds the primary qmap store and
+ * convention, not part of libcorm's core rec_query registry API): spec
+ * is the decimal corm hash mask for stoma_open() (empty/NULL -> 0, the
+ * corm default) — or, when it names a path (contains a '/'), a
+ * 2B-2 primary-seeded rebuild: stoma finds the primary corm store and
  * re-indexes every stored record (`:a:s` raw and `:a:u` decimal alike —
  * keys iterate as refs, values as text), emitting the one-line rebuild
  * budget note (mm-plan U4).
  *
  * Primary resolution (7-AXIS-NAMESPACE-PLAN.md B-1/B-2): the CLI publishes
- * the exact primary it opened as QMAP_AXIS_PRIMARY, and stoma rebuilds
+ * the exact primary it opened as CORM_AXIS_PRIMARY, and stoma rebuilds
  * from THAT primary (verbatim → aliases the live handle) when its
  * `<primary>.roster` sidecar exists. Without the env it falls back to the
  * directory scan (exactly one `*.roster` → use it; none → loud warn, empty).
@@ -844,7 +844,7 @@ __attribute__((constructor)) static void stoma_rec_axis_init(void)
  * wrong primary's data).
  *
  * Malformed/unfindable sidecar → loud warn, memory-only index. The
- * primary open uses the CLI's mask derivation (D11): QMAP_MASK env
+ * primary open uses the CLI's mask derivation (D11): CORM_MASK env
  * (validated 2^n-1) else the 4095 default — co-opened files must always
  * match. Returns the stoma_db_t* ctx directly (no cast needed).
  */
@@ -854,11 +854,11 @@ void *rec_axis_open(const char *spec)
 
 	if (spec && strchr(spec, '/')) {
 		stoma_db_t *db = stoma_open(0);
-		/* CLI mask derivation (D11): QMAP_MASK overrides the 4095
+		/* CLI mask derivation (D11): CORM_MASK overrides the 4095
 		 * default — the sidecar rebuild must open the primary with
 		 * the same table shape the CLI wrote. */
-		const char *menv = getenv("QMAP_MASK");
-		const char *eprim = getenv("QMAP_AXIS_PRIMARY");
+		const char *menv = getenv("CORM_MASK");
+		const char *eprim = getenv("CORM_AXIS_PRIMARY");
 		unsigned pmask = 4096 - 1;
 		char *tmp = strdup(spec);
 		char *dir;
@@ -871,7 +871,7 @@ void *rec_axis_open(const char *spec)
 		size_t docs = 0;
 		struct timespec t0, t1;
 		double ms;
-		/* -1 = directory scan never ran (QMAP_AXIS_PRIMARY used), else
+		/* -1 = directory scan never ran (CORM_AXIS_PRIMARY used), else
 		 * the count of *.roster sidecars the scan saw. */
 		int nroster = -1;
 
@@ -903,7 +903,7 @@ void *rec_axis_open(const char *spec)
 				primary = strdup(eprim);
 			else
 				fprintf(stderr,
-					"stoma: QMAP_AXIS_PRIMARY '%s' has no "
+					"stoma: CORM_AXIS_PRIMARY '%s' has no "
 					"'%s'; falling back to the directory "
 					"scan\n",
 					eprim, rs);
@@ -945,7 +945,7 @@ void *rec_axis_open(const char *spec)
 				fprintf(stderr,
 					"stoma: %d roster sidecars in '%s'; "
 					"cannot pick a primary (set "
-					"QMAP_AXIS_PRIMARY to one DB); text "
+					"CORM_AXIS_PRIMARY to one DB); text "
 					"queries stay empty\n",
 					nroster, dir);
 				free(primary);
@@ -959,26 +959,26 @@ void *rec_axis_open(const char *spec)
 				"sidecar); text queries stay empty\n",
 				dir);
 		} else {
-			hd = qmap_open(primary, "hd", QM_HNDL, QM_STR,
-					pmask, QM_AINDEX | QM_MIRROR);
+			hd = corm_open(primary, "hd", CM_HNDL, CM_STR,
+					pmask, CM_AINDEX | CM_MIRROR);
 			if (!hd) {
 				fprintf(stderr,
 					"stoma: cannot open primary '%s'\n",
 					primary);
 			} else {
 				clock_gettime(CLOCK_MONOTONIC, &t0);
-				cur = qmap_iter(hd, NULL, 0);
-				while (qmap_next(&key, &value, cur)) {
+				cur = corm_iter(hd, NULL, 0);
+				while (corm_next(&key, &value, cur)) {
 					rec_ref_t ref = 0;
 					memcpy(&ref, key,
-							qmap_type_len(QM_HNDL));
+							corm_type_len(CM_HNDL));
 					if (value)
 						stoma_index_ref(db,
 							STOMA_AXIS_TEXT_FIELD,
 							ref, (const char *)value);
 					docs++;
 				}
-				qmap_fin(cur);
+				corm_fin(cur);
 				clock_gettime(CLOCK_MONOTONIC, &t1);
 				ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0
 					+ (double)(t1.tv_nsec - t0.tv_nsec)
@@ -998,7 +998,7 @@ void *rec_axis_open(const char *spec)
 
 /*
  * rec_axis_cli_options / rec_axis_config_arg conventions (D14, round 2:
- * optional axis-contributed CLI options — not libqmap core API): qmap
+ * optional axis-contributed CLI options — not libcorm core API): corm
  * collects inline `--name=value` tokens and, once every bound axis is
  * connected, broadcasts each to the declarations via these dlsym'd symbols.
  * stoma declares `query` (full-text query), `field` (query field), `phrase`

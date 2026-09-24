@@ -1,19 +1,76 @@
-# stoma — Search Tokenization and Accent-Sensitive Inverted Index
+# libstoma
 
-Fast in-memory inverted index and string tokenization library backed by `libcorm`.
+[![C99](https://img.shields.io/badge/C-C99-555?logo=c)](#)
+[![BSD-2-Clause](https://img.shields.io/badge/License-BSD--2--Clause-blue)](#)
+[![FTS tokenizer](https://img.shields.io/badge/FTS-tokenizer-16A34A)](#)
 
-## Overview
+> Accent-sensitive search tokenizer + inverted index.
 
-`stoma` powers the full-text search (FTS) engine for `hyle`. It builds an inverted index over `(field, token) -> row_id`.
+A fast in-memory inverted index and string tokenization library backed by
+`libcorm`. It powers the full-text search (FTS) engine for `hyle`, building an
+inverted index over `(field, token) -> row_id`, and is the lexical axis of the
+recall kernel.
 
-## Key Features
+## Contents
 
-- **Accent-Sensitive String Folding (`stoma_fold`):** Lowercases ASCII (A-Z) and Latin-1 supplement uppercase characters while strictly preserving diacritical marks (`pão` $\neq$ `pao`).
-- **Prefix Matching:** Searches match word beginnings (e.g. query `cor` matches `coração`).
-- **Contiguous Phrase Queries (`stoma_query_phrase`):** Matches multi-word sequences in exact token order across line breaks and punctuation.
-- **Pure C / Zero External Encoding Dependencies:** Operates without `iconv` or system locale dependencies for fast, predictable execution.
+- [Features](#features)
+- [Install](#install)
+- [Build from source](#build-from-source)
+- [Quickstart](#quickstart)
+- [API overview](#api-overview)
+- [Recall-kernel form](#recall-kernel-form)
+- [Documentation](#documentation)
+- [Testing](#testing)
+- [License](#license)
 
-## Key APIs (`include/stoma/stoma.h`)
+## Features
+
+- **Accent-Sensitive String Folding (`stoma_fold`)** — lowercases ASCII (A-Z)
+  and Latin-1 supplement uppercase characters while strictly preserving
+  diacritical marks (`pão` ≠ `pao`).
+- **Prefix Matching** — searches match word beginnings (e.g. query `cor`
+  matches `coração`).
+- **Contiguous Phrase Queries (`stoma_query_phrase`)** — matches multi-word
+  sequences in exact token order across line breaks and punctuation.
+- **Pure C / Zero External Encoding Dependencies** — operates without `iconv`
+  or system locale dependencies for fast, predictable execution.
+
+## Install
+
+Prebuilt packages are distributed from tty.pt for Linux (APT / Alpine / Arch /
+Fedora-RHEL), macOS (Homebrew), Windows (winget / MSYS2), and OpenBSD. Follow
+the [installation instructions](https://github.com/tty-pt/ci/blob/main/docs/install.md)
+and use **libstoma** as the package name.
+
+## Build from source
+
+The library builds with a plain `make` (the shared [`mk` include.mk](https://github.com/tty-pt/mk)):
+
+```sh
+make                  # builds lib/libstoma.so + the stoma_* test binaries
+make test             # run the in-tree test suite
+sudo make install     # lib + headers → $(PREFIX), default /usr/local
+```
+
+**Dependencies:** `libcorm` (hash map storage).
+
+## Quickstart
+
+```c
+#include <stoma.h>
+
+stoma_db_t *db = stoma_open(0xFF);
+stoma_index(db, "title", "song_1", "Coração");
+stoma_index(db, "title", "song_2", "Pão");
+
+int handled = 0;
+uint32_t out = stoma_query(db, "title", "cora", out_hd, &handled);
+stoma_close(db);
+```
+
+## API overview
+
+Key APIs (`include/stoma/stoma.h`):
 
 ```c
 /* String lowercase folding (accent-preserving) */
@@ -80,8 +137,9 @@ int stoma_list_append(char *out, size_t out_sz, const char *token);
 ## Recall-kernel form
 
 stoma is the lexical axis of the recall kernel (`rec.h` in libcorm; spec in
-libcorm's `docs/RECALL-KERNEL.md`). Implemented adapter following the
-contract (one filler, streams matches, seals, plain `int` return, additive):
+`docs/RECALL-KERNEL.md` of [libcorm](https://github.com/tty-pt/corm)).
+Implemented adapter following the contract (one filler, streams matches,
+seals, plain `int` return, additive):
 
 ```c
 /* Exact lexical set: refs are the caller's decimal row ids. phrase=0 behaves
@@ -108,6 +166,20 @@ int stoma_rank(struct stoma_rank_ctx *ctx, rec_ref_t ref, float *score);
 non-numeric row ids (hyle uses them today as a prefilter, no scoring); the
 adapter is optional and additive.
 
-## Dependencies
+## Documentation
 
-- `external/libcorm` — Hash map storage
+The API contract lives in `include/stoma/stoma.h`. The recall-kernel spec is
+in libcorm's `docs/RECALL-KERNEL.md`.
+
+## Testing
+
+```sh
+make test     # runs the stoma_test + stoma_prop_test + axis store tests…
+```
+
+From the repository root, `make boundary-check` runs the module-layer gates,
+and `make test` runs the full platform suite.
+
+## License
+
+BSD 2-Clause License. Copyright (c) 2026, tty-pt. See `LICENSE`.
